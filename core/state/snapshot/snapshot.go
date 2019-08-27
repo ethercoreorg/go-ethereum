@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 var (
@@ -88,7 +89,7 @@ type snapshot interface {
 // storage data to avoid expensive multi-level trie lookups; and to allow sorted,
 // cheap iteration of the account/storage tries for sync aid.
 type SnapshotTree struct {
-	layers map[common.Hash]snapshot // Collection of all known layers
+	layers map[common.Hash]snapshot // Collection of all known layers // TODO(karalabe): split Clique overlaps
 	lock   sync.RWMutex
 }
 
@@ -228,7 +229,7 @@ func loadSnapshot(db ethdb.KeyValueStore, journal string, headNumber uint64, hea
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := loadDiffLayer(base, file)
+	snapshot, err := loadDiffLayer(base, rlp.NewStream(file, 0))
 	if err != nil {
 		return nil, err
 	}

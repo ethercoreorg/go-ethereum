@@ -304,8 +304,6 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	if bc.snaps, err = snapshot.New(bc.db, "snapshot.rlp", head.NumberU64(), head.Root()); err != nil {
 		return nil, err
 	}
-	fmt.Println(bc.snaps)
-
 	// Take ownership of this particular state
 	go bc.update()
 	return bc, nil
@@ -852,6 +850,10 @@ func (bc *BlockChain) Stop() {
 
 	bc.wg.Wait()
 
+	// Ensure that the entirety of the state snapshot is journalled to disk.
+	if err := bc.snaps.Journal(bc.CurrentBlock().Root()); err != nil {
+		log.Error("Failed to journal state snapshot", "err", err)
+	}
 	// Ensure the state of a recent block is also stored to disk before exiting.
 	// We're writing three different states to catch different restart scenarios:
 	//  - HEAD:     So we don't need to reprocess any blocks in the general case

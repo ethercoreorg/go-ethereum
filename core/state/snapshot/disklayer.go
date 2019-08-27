@@ -99,7 +99,7 @@ func (dl *diskLayer) Storage(accountHash, storageHash common.Hash) []byte {
 // the specified data items. Note, the maps are retained by the method to avoid
 // copying everything.
 func (dl *diskLayer) Update(blockHash common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
-	return newDiffLayer(dl, blockHash, accounts, storage)
+	return newDiffLayer(dl, dl.number+1, blockHash, accounts, storage)
 }
 
 // Cap traverses downwards the diff tree until the number of allowed layers are

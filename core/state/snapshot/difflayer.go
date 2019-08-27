@@ -18,8 +18,6 @@ package snapshot
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"sort"
 	"sync"
 
@@ -55,13 +53,11 @@ type diffLayer struct {
 
 // newDiffLayer creates a new diff on top of an existing snapshot, whether that's a low
 // level persistent database or a hierarchical diff already.
-func newDiffLayer(parent snapshot, root common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
+func newDiffLayer(parent snapshot, number uint64, root common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
 	// Create the new layer with some pre-allocated data segments
-	parentNumber, _ := parent.Info()
-
 	dl := &diffLayer{
 		parent:      parent,
-		number:      parentNumber + 1,
+		number:      number,
 		root:        root,
 		accountData: accounts,
 		storageData: storage,
@@ -114,39 +110,6 @@ func newDiffLayer(parent snapshot, root common.Hash, accounts map[common.Hash][]
 	dl.memory += uint64(len(dl.storageList) * common.HashLength)
 
 	return dl
-}
-
-// loadDiffLayer reads the next sections of a snapshot journal, reconstructing a new
-// diff and verifying that it can be linked to the requested parent.
-func loadDiffLayer(parent snapshot, r io.Reader) (snapshot, error) {
-	// Read the next diff journal entry
-	var (
-		number   uint64
-		root     common.Hash
-		accounts = make(map[common.Hash][]byte)
-		storage  = make(map[common.Hash]map[common.Hash][]byte)
-	)
-	if err := rlp.Decode(r, &number); err != nil {
-		// The first read may fail with EOF, marking the end of the journal
-		if err == io.EOF {
-			return parent, nil
-		}
-		return nil, err
-	}
-	if err := rlp.Decode(r, &root); err != nil {
-		return nil, err
-	}
-	if err := rlp.Decode(r, &accounts); err != nil {
-		return nil, err
-	}
-	if err := rlp.Decode(r, &storage); err != nil {
-		return nil, err
-	}
-	// Validate the block number to avoid state corruption
-	if parentNumber, _ := parent.Info(); number != parentNumber+1 {
-		return nil, fmt.Errorf("snapshot chain broken: block #%dl after #%dl", number, parentNumber)
-	}
-	return loadDiffLayer(newDiffLayer(parent, root, accounts, storage), r)
 }
 
 // Info returns the block number and root hash for which this snapshot was made.
@@ -207,7 +170,7 @@ func (dl *diffLayer) Storage(accountHash, storageHash common.Hash) []byte {
 // Update creates a new layer on top of the existing snapshot diff tree with
 // the specified data items.
 func (dl *diffLayer) Update(blockRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
-	return newDiffLayer(dl, blockRoot, accounts, storage)
+	return newDiffLayer(dl, dl.number+1, blockRoot, accounts, storage)
 }
 
 // Cap traverses downwards the diff tree until the number of allowed layers are
@@ -371,44 +334,4 @@ func (dl *diffLayer) Journal() error {
 	}
 	writer.Close()
 	return nil
-}
-
-// journal is the internal version of Journal that also returns the journal file
-// so subsequent layers know where to write to.
-func (dl *diffLayer) journal() (io.WriteCloser, error) {
-	// If we've reached the bottom, open the journal
-	var writer io.WriteCloser
-	if parent, ok := dl.parent.(*diskLayer); ok {
-		file, err := os.Create(parent.journal)
-		if err != nil {
-			return nil, err
-		}
-		writer = file
-	}
-	// If we haven't reached the bottom yet, journal the parent first
-	if writer == nil {
-		file, err := dl.parent.(*diffLayer).journal()
-		if err != nil {
-			return nil, err
-		}
-		writer = file
-	}
-	// Everything below was journalled, persist this layer too
-	if err := rlp.Encode(writer, dl.number); err != nil {
-		writer.Close()
-		return nil, err
-	}
-	if err := rlp.Encode(writer, dl.root); err != nil {
-		writer.Close()
-		return nil, err
-	}
-	if err := rlp.Encode(writer, dl.accountData); err != nil {
-		writer.Close()
-		return nil, err
-	}
-	if err := rlp.Encode(writer, dl.storageData); err != nil {
-		writer.Close()
-		return nil, err
-	}
-	return writer, nil
 }
