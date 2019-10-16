@@ -80,7 +80,7 @@ type snapshot interface {
 }
 
 // SnapshotTree is an Ethereum state snapshot tree. It consists of one persistent
-// base layer backed by a key-value store, on top of which arbitrarilly many in-
+// base layer backed by a key-value store, on top of which arbitrarily many in-
 // memory diff layers are topped. The memory diffs can form a tree with branching,
 // but the disk layer is singleton and common to all. If a reorg goes deeper than
 // the disk layer, everything needs to be deleted.
@@ -220,7 +220,7 @@ func loadSnapshot(db ethdb.KeyValueStore, journal string, headNumber uint64, hea
 	if _, err := os.Stat(journal); os.IsNotExist(err) {
 		// Journal doesn't exist, don't worry if it's not supposed to
 		if number != headNumber || root != headRoot {
-			return nil, fmt.Errorf("snapshot journal missing, head does't match snapshot: #%d [%#x] vs. #%d [%#x]",
+			return nil, fmt.Errorf("snapshot journal missing, head doesn't match snapshot: #%d [%#x] vs. #%d [%#x]",
 				headNumber, headRoot, number, root)
 		}
 		return base, nil
@@ -237,7 +237,7 @@ func loadSnapshot(db ethdb.KeyValueStore, journal string, headNumber uint64, hea
 	// Journal doesn't exist, don't worry if it's not supposed to
 	number, root = snapshot.Info()
 	if number != headNumber || root != headRoot {
-		return nil, fmt.Errorf("head does't match snapshot: #%d [%#x] vs. #%d [%#x]",
+		return nil, fmt.Errorf("head doesn't match snapshot: #%d [%#x] vs. #%d [%#x]",
 			headNumber, headRoot, number, root)
 	}
 	return snapshot, nil
