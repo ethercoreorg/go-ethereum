@@ -194,7 +194,6 @@ func TestInsertAndMerge(t *testing.T) {
 
 // TestCapTree tests some functionality regarding capping/flattening
 func TestCapTree(t *testing.T) {
-
 	var (
 		storage = make(map[common.Hash]map[common.Hash][]byte)
 	)
@@ -204,20 +203,11 @@ func TestCapTree(t *testing.T) {
 		}
 	}
 	// the bottom-most layer, aside from the 'disk layer'
-	cache, _ := bigcache.NewBigCache(bigcache.Config{ // TODO(karalabe): dedup
-		Shards:             1,
-		LifeWindow:         time.Hour,
-		MaxEntriesInWindow: 1 * 1024,
-		MaxEntrySize:       1,
-		HardMaxCacheSize:   1,
-	})
-
+	cache, _ := bigcache.NewBigCache(bigcache.DefaultConfig(time.Minute))
 	base := &diskLayer{
-		journal: "",
-		db:      rawdb.NewMemoryDatabase(),
-		cache:   cache,
-		number:  0,
-		root:    common.HexToHash("0x01"),
+		db:    rawdb.NewMemoryDatabase(),
+		root:  common.HexToHash("0x01"),
+		cache: cache,
 	}
 	// The lowest difflayer
 	a1 := base.Update(common.HexToHash("0xa1"), setAccount("0xa1"), storage)
@@ -403,7 +393,6 @@ func BenchmarkSearchSlot(b *testing.B) {
 // Without sorting and tracking accountlist
 // BenchmarkFlatten-6   	     300	   5511511 ns/op
 func BenchmarkFlatten(b *testing.B) {
-
 	fill := func(parent snapshot, blocknum int) *diffLayer {
 		accounts := make(map[common.Hash][]byte)
 		storage := make(map[common.Hash]map[common.Hash][]byte)
