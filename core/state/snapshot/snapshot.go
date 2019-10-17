@@ -38,6 +38,11 @@ var (
 	snapshotCleanMissMeter  = metrics.NewRegisteredMeter("state/snapshot/clean/miss", nil)
 	snapshotCleanReadMeter  = metrics.NewRegisteredMeter("state/snapshot/clean/read", nil)
 	snapshotCleanWriteMeter = metrics.NewRegisteredMeter("state/snapshot/clean/write", nil)
+
+	// ErrSnapshotStale is returned from data accessors if the underlying snapshot
+	// layer had been invalidated due to the chain progressing forward far enough
+	// to not maintain the layer's original state.
+	ErrSnapshotStale = errors.New("snapshot stale")
 )
 
 // Snapshot represents the functionality supported by a snapshot storage layer.
@@ -47,15 +52,15 @@ type Snapshot interface {
 
 	// Account directly retrieves the account associated with a particular hash in
 	// the snapshot slim data format.
-	Account(hash common.Hash) *Account
+	Account(hash common.Hash) (*Account, error)
 
 	// AccountRLP directly retrieves the account RLP associated with a particular
 	// hash in the snapshot slim data format.
-	AccountRLP(hash common.Hash) []byte
+	AccountRLP(hash common.Hash) ([]byte, error)
 
 	// Storage directly retrieves the storage data associated with a particular hash,
 	// within a particular account.
-	Storage(accountHash, storageHash common.Hash) []byte
+	Storage(accountHash, storageHash common.Hash) ([]byte, error)
 }
 
 // snapshot is the internal version of the snapshot data layer that supports some
