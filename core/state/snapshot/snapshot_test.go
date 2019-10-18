@@ -29,7 +29,7 @@ import (
 // be returned with junk data. This version of the test flattens every diff layer
 // to check internal corner case around the bottom-most memory accumulator.
 func TestDiskLayerExternalInvalidationFullFlatten(t *testing.T) {
-	// Create an empty base layer and a snapshot tee out of it
+	// Create an empty base layer and a snapshot tree out of it
 	cache, _ := bigcache.NewBigCache(bigcache.DefaultConfig(time.Minute))
 	base := &diskLayer{
 		db:    rawdb.NewMemoryDatabase(),
@@ -68,7 +68,7 @@ func TestDiskLayerExternalInvalidationFullFlatten(t *testing.T) {
 // be returned with junk data. This version of the test retains the bottom diff
 // layer to check the usual mode of operation where the accumulator is retained.
 func TestDiskLayerExternalInvalidationPartialFlatten(t *testing.T) {
-	// Create an empty base layer and a snapshot tee out of it
+	// Create an empty base layer and a snapshot tree out of it
 	cache, _ := bigcache.NewBigCache(bigcache.DefaultConfig(time.Minute))
 	base := &diskLayer{
 		db:    rawdb.NewMemoryDatabase(),
@@ -80,7 +80,7 @@ func TestDiskLayerExternalInvalidationPartialFlatten(t *testing.T) {
 			base.root: base,
 		},
 	}
-	// Retrieve a reference to the base and commit a diff on top
+	// Retrieve a reference to the base and commit two diffs on top
 	ref := snaps.Snapshot(base.root)
 
 	accounts := map[common.Hash][]byte{
@@ -98,6 +98,93 @@ func TestDiskLayerExternalInvalidationPartialFlatten(t *testing.T) {
 		t.Fatalf("failed to merge diff layer onto disk: %v", err)
 	}
 	// Since the base layer was modified, ensure that data retrievald on the external reference fail
+	if acc, err := ref.Account(common.HexToHash("0x01")); err != ErrSnapshotStale {
+		t.Errorf("stale reference returned account: %#x (err: %v)", acc, err)
+	}
+	if slot, err := ref.Storage(common.HexToHash("0xa1"), common.HexToHash("0xb1")); err != ErrSnapshotStale {
+		t.Errorf("stale reference returned storage slot: %#x (err: %v)", slot, err)
+	}
+}
+
+// Tests that if a diff layer becomes stale, no active external references will
+// be returned with junk data. This version of the test flattens every diff layer
+// to check internal corner case around the bottom-most memory accumulator.
+func TestDiffLayerExternalInvalidationFullFlatten(t *testing.T) {
+	// Create an empty base layer and a snapshot tree out of it
+	cache, _ := bigcache.NewBigCache(bigcache.DefaultConfig(time.Minute))
+	base := &diskLayer{
+		db:    rawdb.NewMemoryDatabase(),
+		root:  common.HexToHash("0x01"),
+		cache: cache,
+	}
+	snaps := &SnapshotTree{
+		layers: map[common.Hash]snapshot{
+			base.root: base,
+		},
+	}
+	// Commit two diffs on top and retrieve a reference to the bottommost
+	accounts := map[common.Hash][]byte{
+		common.HexToHash("0xa1"): randomAccount(),
+	}
+	storage := make(map[common.Hash]map[common.Hash][]byte)
+	if err := snaps.Update(common.HexToHash("0x02"), common.HexToHash("0x01"), accounts, storage); err != nil {
+		t.Fatalf("failed to create a diff layer: %v", err)
+	}
+	if err := snaps.Update(common.HexToHash("0x03"), common.HexToHash("0x02"), accounts, storage); err != nil {
+		t.Fatalf("failed to create a diff layer: %v", err)
+	}
+	ref := snaps.Snapshot(common.HexToHash("0x02"))
+
+	// Flatten the diff layer into the bottom accumulator
+	if err := snaps.Cap(common.HexToHash("0x03"), 2, 1024*1024); err != nil {
+		t.Fatalf("failed to flatten diff layer into accumulator: %v", err)
+	}
+	// Since the accumulator diff layer was modified, ensure that data retrievald on the external reference fail
+	if acc, err := ref.Account(common.HexToHash("0x01")); err != ErrSnapshotStale {
+		t.Errorf("stale reference returned account: %#x (err: %v)", acc, err)
+	}
+	if slot, err := ref.Storage(common.HexToHash("0xa1"), common.HexToHash("0xb1")); err != ErrSnapshotStale {
+		t.Errorf("stale reference returned storage slot: %#x (err: %v)", slot, err)
+	}
+}
+
+// Tests that if a diff layer becomes stale, no active external references will
+// be returned with junk data. This version of the test retains the bottom diff
+// layer to check the usual mode of operation where the accumulator is retained.
+func TestDiffLayerExternalInvalidationPartialFlatten(t *testing.T) {
+	// Create an empty base layer and a snapshot tree out of it
+	cache, _ := bigcache.NewBigCache(bigcache.DefaultConfig(time.Minute))
+	base := &diskLayer{
+		db:    rawdb.NewMemoryDatabase(),
+		root:  common.HexToHash("0x01"),
+		cache: cache,
+	}
+	snaps := &SnapshotTree{
+		layers: map[common.Hash]snapshot{
+			base.root: base,
+		},
+	}
+	// Commit three diffs on top and retrieve a reference to the bottommost
+	accounts := map[common.Hash][]byte{
+		common.HexToHash("0xa1"): randomAccount(),
+	}
+	storage := make(map[common.Hash]map[common.Hash][]byte)
+	if err := snaps.Update(common.HexToHash("0x02"), common.HexToHash("0x01"), accounts, storage); err != nil {
+		t.Fatalf("failed to create a diff layer: %v", err)
+	}
+	if err := snaps.Update(common.HexToHash("0x03"), common.HexToHash("0x02"), accounts, storage); err != nil {
+		t.Fatalf("failed to create a diff layer: %v", err)
+	}
+	if err := snaps.Update(common.HexToHash("0x04"), common.HexToHash("0x03"), accounts, storage); err != nil {
+		t.Fatalf("failed to create a diff layer: %v", err)
+	}
+	ref := snaps.Snapshot(common.HexToHash("0x02"))
+
+	// Flatten the diff layer into the bottom accumulator
+	if err := snaps.Cap(common.HexToHash("0x04"), 2, 1024*1024); err != nil {
+		t.Fatalf("failed to flatten diff layer into accumulator: %v", err)
+	}
+	// Since the accumulator diff layer was modified, ensure that data retrievald on the external reference fail
 	if acc, err := ref.Account(common.HexToHash("0x01")); err != ErrSnapshotStale {
 		t.Errorf("stale reference returned account: %#x (err: %v)", acc, err)
 	}
