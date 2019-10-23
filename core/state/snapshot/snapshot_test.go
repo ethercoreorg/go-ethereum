@@ -277,6 +277,10 @@ func TestPostCapBasicDataAccess(t *testing.T) {
 	if err := checkExist(snap, "0xb3"); err != nil {
 		t.Error(err)
 	}
+	// Cap to a bad root should fail
+	if err := snaps.Cap(common.HexToHash("0x1337"), 0, 1024); err == nil {
+		t.Errorf("expected error, got none")
+	}
 	// Now, merge the a-chain
 	snaps.Cap(common.HexToHash("0xa3"), 0, 1024)
 

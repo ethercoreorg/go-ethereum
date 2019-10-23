@@ -160,13 +160,15 @@ func (st *SnapshotTree) Update(blockRoot common.Hash, parentRoot common.Hash, ac
 // are flattened downwards.
 func (st *SnapshotTree) Cap(blockRoot common.Hash, layers int, memory uint64) error {
 	// Retrieve the head snapshot to cap from
-	snap := st.Snapshot(blockRoot).(snapshot)
-	if snap == nil {
+	var snap snapshot
+	if s := st.Snapshot(blockRoot); s == nil {
 		return fmt.Errorf("snapshot [%#x] missing", blockRoot)
+	} else {
+		snap = s.(snapshot)
 	}
 	diff, ok := snap.(*diffLayer)
 	if !ok {
-		return fmt.Errorf("snapshot [%#x] is base layer", blockRoot)
+		return fmt.Errorf("snapshot [%#x] is disk layer", blockRoot)
 	}
 	// Run the internal capping and discard all stale layers
 	st.lock.Lock()
@@ -356,9 +358,11 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 // flattening everything down (bad for reorgs).
 func (st *SnapshotTree) Journal(blockRoot common.Hash) error {
 	// Retrieve the head snapshot to journal from
-	snap := st.Snapshot(blockRoot).(snapshot)
-	if snap == nil {
+	var snap snapshot
+	if s := st.Snapshot(blockRoot); s == nil {
 		return fmt.Errorf("snapshot [%#x] missing", blockRoot)
+	} else {
+		snap = s.(snapshot)
 	}
 	// Run the journaling
 	st.lock.Lock()
