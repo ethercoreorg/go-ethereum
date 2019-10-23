@@ -230,13 +230,14 @@ func (st *SnapshotTree) Cap(blockRoot common.Hash, layers int, memory uint64) er
 // block numbers for the disk layer and first diff layer are returned for GC.
 func (st *SnapshotTree) cap(diff *diffLayer, layers int, memory uint64) (uint64, uint64) {
 	// Dive until we run out of layers or reach the persistent database
-	if layers > 2 {
-		// If we still have diff layers below, recurse
+	for ; layers > 2; layers-- {
+		// If we still have diff layers below, continue down
 		if parent, ok := diff.parent.(*diffLayer); ok {
-			return st.cap(parent, layers-1, memory)
+			diff = parent
+		} else {
+			// Diff stack too shallow, return block numbers without modifications
+			return diff.parent.(*diskLayer).number, diff.number
 		}
-		// Diff stack too shallow, return block numbers without modifications
-		return diff.parent.(*diskLayer).number, diff.number
 	}
 	// We're out of layers, flatten anything below, stopping if it's the disk or if
 	// the memory limit is not yet exceeded.
