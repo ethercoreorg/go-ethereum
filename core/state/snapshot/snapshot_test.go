@@ -213,7 +213,6 @@ func TestDiffLayerExternalInvalidationPartialFlatten(t *testing.T) {
 	if got := len(snaps.layers); got != exp {
 		t.Errorf("layers modified, got %d exp %d", got, exp)
 	}
-
 	// Flatten the diff layer into the bottom accumulator
 	if err := snaps.Cap(common.HexToHash("0x04"), 2, 1024*1024); err != nil {
 		t.Fatalf("failed to flatten diff layer into accumulator: %v", err)

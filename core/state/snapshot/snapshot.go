@@ -160,11 +160,9 @@ func (st *SnapshotTree) Update(blockRoot common.Hash, parentRoot common.Hash, ac
 // are flattened downwards.
 func (st *SnapshotTree) Cap(blockRoot common.Hash, layers int, memory uint64) error {
 	// Retrieve the head snapshot to cap from
-	var snap snapshot
-	if s := st.Snapshot(blockRoot); s == nil {
+	snap := st.Snapshot(blockRoot)
+	if snap == nil {
 		return fmt.Errorf("snapshot [%#x] missing", blockRoot)
-	} else {
-		snap = s.(snapshot)
 	}
 	diff, ok := snap.(*diffLayer)
 	if !ok {
@@ -358,18 +356,16 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 // This is meant to be used during shutdown to persist the snapshot without
 // flattening everything down (bad for reorgs).
 func (st *SnapshotTree) Journal(blockRoot common.Hash) error {
-	// Retrieve the head snapshot to journal from
-	var snap snapshot
-	if s := st.Snapshot(blockRoot); s == nil {
+	// Retrieve the head snapshot to journal from var snap snapshot
+	snap := st.Snapshot(blockRoot)
+	if snap == nil {
 		return fmt.Errorf("snapshot [%#x] missing", blockRoot)
-	} else {
-		snap = s.(snapshot)
 	}
 	// Run the journaling
 	st.lock.Lock()
 	defer st.lock.Unlock()
 
-	return snap.Journal()
+	return snap.(snapshot).Journal()
 }
 
 // loadSnapshot loads a pre-existing state snapshot backed by a key-value store.
