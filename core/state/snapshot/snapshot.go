@@ -228,24 +228,25 @@ func (t *Tree) Cap(root common.Hash, layers int, memory uint64) error {
 		// Many layers requested to be retained, cap normally
 		t.cap(diff, layers, memory)
 	}
-	// Layers have been capped and paths invalidated, remove stales
+	// Remove any layer that is stale or links into a stale layer
+	children := make(map[common.Hash][]common.Hash)
 	for root, snap := range t.layers {
-		if snap.Stale() {
-			delete(t.layers, root)
+		if diff, ok := snap.(*diffLayer); ok {
+			parent := diff.parent.Root()
+			children[parent] = append(children[parent], root)
 		}
 	}
-	// Remove anything that links into a stale.
-	// TODO(karalabe): this is super suboptimal
-	for {
-		done := true
-		for root, snap := range t.layers {
-			if snap.Stale() {
-				delete(t.layers, root)
-				done = false
-			}
+	var remove func(root common.Hash)
+	remove = func(root common.Hash) {
+		delete(t.layers, root)
+		for _, child := range children[root] {
+			remove(child)
 		}
-		if done {
-			break
+		delete(children, root)
+	}
+	for root, snap := range t.layers {
+		if snap.Stale() {
+			remove(root)
 		}
 	}
 	return nil

@@ -98,15 +98,6 @@ func (dl *diffLayer) Root() common.Hash {
 // Stale return whether this layer has become stale (was flattened across) or if
 // it's still live.
 func (dl *diffLayer) Stale() bool {
-	// If the parent is stale, mark this layer as stale too
-	if stale := dl.parent.Stale(); stale {
-		dl.lock.Lock()
-		defer dl.lock.Unlock()
-
-		dl.stale = true
-		return true
-	}
-	// Parent not stale, return only whether we are
 	dl.lock.RLock()
 	defer dl.lock.RUnlock()
 
