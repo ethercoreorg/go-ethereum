@@ -37,7 +37,7 @@ func TestDiskLayerExternalInvalidationFullFlatten(t *testing.T) {
 		root:  common.HexToHash("0x01"),
 		cache: cache,
 	}
-	snaps := &SnapshotTree{
+	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
 			base.root: base,
 		},
@@ -83,7 +83,7 @@ func TestDiskLayerExternalInvalidationPartialFlatten(t *testing.T) {
 		root:  common.HexToHash("0x01"),
 		cache: cache,
 	}
-	snaps := &SnapshotTree{
+	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
 			base.root: base,
 		},
@@ -132,7 +132,7 @@ func TestDiffLayerExternalInvalidationFullFlatten(t *testing.T) {
 		root:  common.HexToHash("0x01"),
 		cache: cache,
 	}
-	snaps := &SnapshotTree{
+	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
 			base.root: base,
 		},
@@ -181,7 +181,7 @@ func TestDiffLayerExternalInvalidationPartialFlatten(t *testing.T) {
 		root:  common.HexToHash("0x01"),
 		cache: cache,
 	}
-	snaps := &SnapshotTree{
+	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
 			base.root: base,
 		},
@@ -246,7 +246,7 @@ func TestPostCapBasicDataAccess(t *testing.T) {
 		root:  common.HexToHash("0x01"),
 		cache: cache,
 	}
-	snaps := &SnapshotTree{
+	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
 			base.root: base,
 		},

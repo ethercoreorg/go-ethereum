@@ -88,7 +88,7 @@ type snapshot interface {
 // The goal of a state snapshot is twofold: to allow direct access to account and
 // storage data to avoid expensive multi-level trie lookups; and to allow sorted,
 // cheap iteration of the account/storage tries for sync aid.
-type SnapshotTree struct {
+type Tree struct {
 	layers map[common.Hash]snapshot // Collection of all known layers // TODO(karalabe): split Clique overlaps
 	lock   sync.RWMutex
 }
@@ -99,7 +99,7 @@ type SnapshotTree struct {
 //
 // If the snapshot is missing or inconsistent, the entirety is deleted and will
 // be reconstructed from scratch based on the tries in the key-value store.
-func New(db ethdb.KeyValueStore, journal string, headNumber uint64, headRoot common.Hash) (*SnapshotTree, error) {
+func New(db ethdb.KeyValueStore, journal string, headNumber uint64, headRoot common.Hash) (*Tree, error) {
 	// Attempt to load a previously persisted snapshot
 	head, err := loadSnapshot(db, journal, headNumber, headRoot)
 	if err != nil {
@@ -109,7 +109,7 @@ func New(db ethdb.KeyValueStore, journal string, headNumber uint64, headRoot com
 		}
 	}
 	// Existing snapshot loaded or one regenerated, seed all the layers
-	snap := &SnapshotTree{
+	snap := &Tree{
 		layers: make(map[common.Hash]snapshot),
 	}
 	for head != nil {
@@ -130,37 +130,37 @@ func New(db ethdb.KeyValueStore, journal string, headNumber uint64, headRoot com
 
 // Snapshot retrieves a snapshot belonging to the given block root, or nil if no
 // snapshot is maintained for that block.
-func (st *SnapshotTree) Snapshot(blockRoot common.Hash) Snapshot {
-	st.lock.RLock()
-	defer st.lock.RUnlock()
+func (t *Tree) Snapshot(blockRoot common.Hash) Snapshot {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
 
-	return st.layers[blockRoot]
+	return t.layers[blockRoot]
 }
 
 // Update adds a new snapshot into the tree, if that can be linked to an existing
 // old parent. It is disallowed to insert a disk layer (the origin of all).
-func (st *SnapshotTree) Update(blockRoot common.Hash, parentRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) error {
+func (t *Tree) Update(blockRoot common.Hash, parentRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) error {
 	// Generate a new snapshot on top of the parent
-	parent := st.Snapshot(parentRoot).(snapshot)
+	parent := t.Snapshot(parentRoot).(snapshot)
 	if parent == nil {
 		return fmt.Errorf("parent [%#x] snapshot missing", parentRoot)
 	}
 	snap := parent.Update(blockRoot, accounts, storage)
 
 	// Save the new snapshot for later
-	st.lock.Lock()
-	defer st.lock.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
-	st.layers[snap.root] = snap
+	t.layers[snap.root] = snap
 	return nil
 }
 
 // Cap traverses downwards the snapshot tree from a head block hash until the
 // number of allowed layers are crossed. All layers beyond the permitted number
 // are flattened downwards.
-func (st *SnapshotTree) Cap(blockRoot common.Hash, layers int, memory uint64) error {
+func (t *Tree) Cap(blockRoot common.Hash, layers int, memory uint64) error {
 	// Retrieve the head snapshot to cap from
-	snap := st.Snapshot(blockRoot)
+	snap := t.Snapshot(blockRoot)
 	if snap == nil {
 		return fmt.Errorf("snapshot [%#x] missing", blockRoot)
 	}
@@ -169,8 +169,8 @@ func (st *SnapshotTree) Cap(blockRoot common.Hash, layers int, memory uint64) er
 		return fmt.Errorf("snapshot [%#x] is disk layer", blockRoot)
 	}
 	// Run the internal capping and discard all stale layers
-	st.lock.Lock()
-	defer st.lock.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	var (
 		diskNumber uint64
@@ -186,7 +186,7 @@ func (st *SnapshotTree) Cap(blockRoot common.Hash, layers int, memory uint64) er
 		base := diffToDisk(diff.flatten().(*diffLayer))
 		diff.lock.RUnlock()
 
-		st.layers[base.root] = base
+		t.layers[base.root] = base
 		diskNumber, diffNumber = base.number, base.number
 
 	case 1:
@@ -204,19 +204,19 @@ func (st *SnapshotTree) Cap(blockRoot common.Hash, layers int, memory uint64) er
 		diff.lock.RUnlock()
 
 		if base != nil {
-			st.layers[base.root] = base
+			t.layers[base.root] = base
 			diskNumber, diffNumber = base.number, base.number
 		} else {
-			st.layers[bottom.root] = bottom
+			t.layers[bottom.root] = bottom
 			diskNumber, diffNumber = bottom.parent.(*diskLayer).number, bottom.number
 		}
 
 	default:
-		diskNumber, diffNumber = st.cap(diff, layers, memory)
+		diskNumber, diffNumber = t.cap(diff, layers, memory)
 	}
-	for root, snap := range st.layers {
+	for root, snap := range t.layers {
 		if number, _ := snap.Info(); number != diskNumber && number < diffNumber {
-			delete(st.layers, root)
+			delete(t.layers, root)
 		}
 	}
 	return nil
@@ -226,7 +226,7 @@ func (st *SnapshotTree) Cap(blockRoot common.Hash, layers int, memory uint64) er
 // crossed. All diffs beyond the permitted number are flattened downwards. If
 // the layer limit is reached, memory cap is also enforced (but not before). The
 // block numbers for the disk layer and first diff layer are returned for GC.
-func (st *SnapshotTree) cap(diff *diffLayer, layers int, memory uint64) (uint64, uint64) {
+func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) (uint64, uint64) {
 	// Dive until we run out of layers or reach the persistent database
 	for ; layers > 2; layers-- {
 		// If we still have diff layers below, continue down
@@ -247,7 +247,7 @@ func (st *SnapshotTree) cap(diff *diffLayer, layers int, memory uint64) (uint64,
 		// Flatten the parent into the grandparent. The flattening internally obtains a
 		// write lock on grandparent.
 		flattened := parent.flatten().(*diffLayer)
-		st.layers[flattened.root] = flattened
+		t.layers[flattened.root] = flattened
 
 		diff.lock.Lock()
 		defer diff.lock.Unlock()
@@ -267,7 +267,7 @@ func (st *SnapshotTree) cap(diff *diffLayer, layers int, memory uint64) (uint64,
 	base := diffToDisk(bottom)
 	bottom.lock.RUnlock()
 
-	st.layers[base.root] = base
+	t.layers[base.root] = base
 	diff.parent = base
 
 	return base.number, diff.number
@@ -355,15 +355,15 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 // Journal commits an entire diff hierarchy to disk into a single journal file.
 // This is meant to be used during shutdown to persist the snapshot without
 // flattening everything down (bad for reorgs).
-func (st *SnapshotTree) Journal(blockRoot common.Hash) error {
+func (t *Tree) Journal(blockRoot common.Hash) error {
 	// Retrieve the head snapshot to journal from var snap snapshot
-	snap := st.Snapshot(blockRoot)
+	snap := t.Snapshot(blockRoot)
 	if snap == nil {
 		return fmt.Errorf("snapshot [%#x] missing", blockRoot)
 	}
 	// Run the journaling
-	st.lock.Lock()
-	defer st.lock.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	return snap.(snapshot).Journal()
 }
