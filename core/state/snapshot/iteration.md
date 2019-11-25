@@ -17,6 +17,8 @@ Our 'primary' `A` iterator is on the left, containing the elements `[0,1,8]`
 When we call `Next` on the primary iterator, we get (ignoring the future keys)
 
 ```
+A  B  C  D  E  F
+
 1  1  2  4  7  9
 ```
 We detect that we now got an equality between our element and the next element.
@@ -39,15 +41,15 @@ A  B  D  E  F  C
 1  2  4  7  9  9
 ```
 
-And after shifting it rightwards, we check equality again, and find `C` == `F`, and thus
-call `Next` on `F`
+And after shifting it rightwards, we check equality again, and find `C == F`, and thus
+call `Next` on `C`
 
 ```
 A  B  D  E  F  C
 
 1  2  4  7  9  -
 ```
-At this point, C was exhausted, and is removed
+At this point, `C` was exhausted, and is removed
 
 ```
 A  B  D  E  F

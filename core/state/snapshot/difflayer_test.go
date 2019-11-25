@@ -393,6 +393,10 @@ func (ti *testIterator) Key() common.Hash {
 	return common.BytesToHash([]byte{ti.values[0]})
 }
 
+func (ti *testIterator) Seek(common.Hash) {
+	panic("implement me")
+}
+
 func TestFastIteratorBasics(t *testing.T) {
 	type testCase struct {
 		lists   [][]byte
@@ -516,7 +520,7 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 		accounts := make(map[common.Hash][]byte)
 		for i := 0; i < num; i++ {
 			h := common.Hash{}
-			binary.BigEndian.PutUint64(h[:], uint64(i))
+			binary.BigEndian.PutUint64(h[:], uint64(i+1))
 			accounts[h] = randomAccount()
 		}
 		return accounts
@@ -576,7 +580,7 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 		accounts := make(map[common.Hash][]byte)
 		for i := 0; i < num; i++ {
 			h := common.Hash{}
-			binary.BigEndian.PutUint64(h[:], uint64(i))
+			binary.BigEndian.PutUint64(h[:], uint64(i+1))
 			accounts[h] = randomAccount()
 		}
 		return accounts
@@ -654,4 +658,55 @@ func TestIteratorFlattning(t *testing.T) {
 	child.parent.(*diffLayer).flatten()
 	// The parent should now be stale
 	verifyIterator(t, 7, it)
+}
+
+func TestIteratorSeek(t *testing.T) {
+	storage := make(map[common.Hash]map[common.Hash][]byte)
+	mkAccounts := func(args ...string) map[common.Hash][]byte {
+		accounts := make(map[common.Hash][]byte)
+		for _, h := range args {
+			accounts[common.HexToHash(h)] = randomAccount()
+		}
+		return accounts
+	}
+	parent := newDiffLayer(emptyLayer{}, common.Hash{},
+		mkAccounts("0xaa", "0xee", "0xff", "0xf0"), storage)
+	it := parent.newIterator()
+	// expected: ee, f0, ff
+	it.Seek(common.HexToHash("0xdd"))
+	verifyIterator(t, 3, it)
+
+	it = parent.newIterator().(*dlIterator)
+	// expected: ee, f0, ff
+	it.Seek(common.HexToHash("0xaa"))
+	verifyIterator(t, 3, it)
+
+	it = parent.newIterator().(*dlIterator)
+	// expected: nothing
+	it.Seek(common.HexToHash("0xff"))
+	verifyIterator(t, 0, it)
+
+	child := parent.Update(common.Hash{},
+		mkAccounts("0xbb", "0xdd", "0xf0"), storage)
+
+	child = child.Update(common.Hash{},
+		mkAccounts("0xcc", "0xf0", "0xff"), storage)
+
+	it = child.newFastIterator()
+	// expected: cc, dd, ee, f0, ff
+	it.Seek(common.HexToHash("0xbb"))
+	verifyIterator(t, 5, it)
+
+	it = child.newFastIterator()
+	it.Seek(common.HexToHash("0xef"))
+	// exp: f0, ff
+	verifyIterator(t, 2, it)
+
+	it = child.newFastIterator()
+	it.Seek(common.HexToHash("0xf0"))
+	verifyIterator(t, 1, it)
+
+	it.Seek(common.HexToHash("0xff"))
+	verifyIterator(t, 0, it)
+
 }

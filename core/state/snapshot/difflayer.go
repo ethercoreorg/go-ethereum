@@ -478,8 +478,14 @@ func (dl *diffLayer) StorageList(accountHash common.Hash) []common.Hash {
 }
 
 type Iterator interface {
+	// Next steps the iterator forward one element, and returns false if
+	// the iterator is exhausted
 	Next() bool
+	// Key returns the current key
 	Key() common.Hash
+	// Seek steps the iterator forward as many elements as needed, so that after
+	// calling Next(), the iterator will be at a key higher than the given hash
+	Seek(common.Hash)
 }
 
 func (dl *diffLayer) newIterator() Iterator {
@@ -504,6 +510,18 @@ func (it *dlIterator) Key() common.Hash {
 		return it.layer.accountList[it.index]
 	}
 	return common.Hash{}
+}
+
+func (it *dlIterator) Seek(key common.Hash) {
+	// Search uses binary search to find and return the smallest index i
+	// in [0, n) at which f(i) is true
+	size := len(it.layer.accountList)
+	index := sort.Search(size,
+		func(i int) bool {
+			v := it.layer.accountList[i]
+			return bytes.Compare(key[:], v[:]) < 0
+		})
+	it.index = index - 1
 }
 
 type binaryIterator struct {
@@ -563,6 +581,9 @@ first:
 
 func (it *binaryIterator) Key() common.Hash {
 	return it.k
+}
+func (it *binaryIterator) Seek(key common.Hash) {
+	panic("todo: implement")
 }
 
 func (dl *diffLayer) iterators() []Iterator {
@@ -700,28 +721,39 @@ func (fi *fastIterator) Key() common.Hash {
 	return fi.iterators[0].Key()
 }
 
-// The fast iterator does not query parents as much.
-func (dl *diffLayer) newFastIterator() Iterator {
+func (fi *fastIterator) Seek(key common.Hash) {
+	// We need to apply this across all iterators
 	var seen = make(map[common.Hash]struct{})
-	all_iterators := dl.iterators()
-	var iterators []Iterator
-	// An initial sorting of the iterators is needed. We can't use
-	// sort.Sort immediately, until we have deduped the iterators keys
-	for _, it := range all_iterators {
+
+	length := len(fi.iterators)
+	for i, it := range fi.iterators {
+		it.Seek(key)
 		for {
 			if !it.Next() {
+				// To be removed
+				// swap it to the last position for now
+				fi.iterators[i], fi.iterators[length-1] = fi.iterators[length-1], fi.iterators[i]
+				length--
 				break
 			}
 			v := it.Key()
 			if _, exist := seen[v]; !exist {
 				seen[v] = struct{}{}
-				iterators = append(iterators, it)
 				break
 			}
 		}
 	}
-	f := &fastIterator{iterators, false}
-	sort.Sort(f)
+	// Now remove those that were placed in the end
+	fi.iterators = fi.iterators[:length]
+	// The list is now totally unsorted, need to re-sort the entire list
+	sort.Sort(fi)
+	fi.initiated = false
+}
+
+// The fast iterator does not query parents as much.
+func (dl *diffLayer) newFastIterator() Iterator {
+	f := &fastIterator{dl.iterators(), false}
+	f.Seek(common.Hash{})
 	return f
 }
 
