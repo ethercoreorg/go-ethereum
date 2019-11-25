@@ -370,15 +370,8 @@ func TestIteratorBasics(t *testing.T) {
 	}
 	// Add some (identical) layers on top
 	parent := newDiffLayer(emptyLayer{}, common.Hash{}, accounts, storage)
-	last := common.Hash{}
 	it := parent.newIterator()
-	for it.Next() {
-		v := it.Key()
-		if bytes.Compare(last[:], v[:]) >= 0 {
-			t.Errorf("Wrong order:\n%x \n>=\n%x", last, v)
-		}
-		//fmt.Printf("%x\n", it.Key())
-	}
+	verifyIterator(t, 100, it)
 }
 
 type testIterator struct {
@@ -432,6 +425,23 @@ func TestFastIteratorBasics(t *testing.T) {
 	}
 }
 
+func verifyIterator(t *testing.T, expCount int, it Iterator) {
+	var (
+		i    = 0
+		last = common.Hash{}
+	)
+	for it.Next() {
+		v := it.Key()
+		if bytes.Compare(last[:], v[:]) >= 0 {
+			t.Errorf("Wrong order:\n%x \n>=\n%x", last, v)
+		}
+		i++
+	}
+	if i != expCount {
+		t.Errorf("iterator len wrong, expected %d, got %d", expCount, i)
+	}
+}
+
 // TestIteratorTraversal tests some simple multi-layer iteration
 func TestIteratorTraversal(t *testing.T) {
 	var (
@@ -455,39 +465,12 @@ func TestIteratorTraversal(t *testing.T) {
 	child = child.Update(common.Hash{},
 		mkAccounts("0xcc", "0xf0", "0xff"), storage)
 
-	{ // single layer iterator
-		it := child.newIterator()
-		i := 0
-		for it.Next() {
-			//fmt.Printf("s: %x\n", it.Key())
-			i++
-		}
-		if i != 3 {
-			t.Errorf("iterator len wrong, expected 3, got %d", i)
-		}
-	}
-	{ // multi-layered binary iterator
-		i := 0
-		it := child.newBinaryIterator()
-		for it.Next() {
-			//fmt.Printf("M: %x\n", it.Key())
-			i++
-		}
-		if exp := 7; i != exp {
-			t.Errorf("iterator len wrong, expected %d, got %d", exp, i)
-		}
-	}
-	{ // multi-layered fast iterator
-		i := 0
-		it := child.newFastIterator()
-		for it.Next() {
-			//fmt.Printf("M: %x\n", it.Key())
-			i++
-		}
-		if exp := 7; i != exp {
-			t.Errorf("iterator len wrong, expected %d, got %d", exp, i)
-		}
-	}
+	// single layer iterator
+	verifyIterator(t, 3, child.newIterator())
+	// multi-layered binary iterator
+	verifyIterator(t, 7, child.newBinaryIterator())
+	// multi-layered fast iterator
+	verifyIterator(t, 7, child.newFastIterator())
 }
 
 func TestIteratorLargeTraversal(t *testing.T) {
@@ -498,7 +481,7 @@ func TestIteratorLargeTraversal(t *testing.T) {
 		accounts := make(map[common.Hash][]byte)
 		for i := 0; i < num; i++ {
 			h := common.Hash{}
-			binary.BigEndian.PutUint64(h[:], uint64(i))
+			binary.BigEndian.PutUint64(h[:], uint64(i+1))
 			accounts[h] = randomAccount()
 		}
 		return accounts
@@ -511,28 +494,12 @@ func TestIteratorLargeTraversal(t *testing.T) {
 		child = child.Update(common.Hash{},
 			mkAccounts(200), storage)
 	}
-	// We call this once before the benchmark, so the creation of
-	// sorted accountlists are not included in the results.
-	{
-		got := 0
-		it := child.newBinaryIterator()
-		for it.Next() {
-			got++
-		}
-		if exp := 200; got != exp {
-			t.Errorf("binary iterator len wrong, expected %d, got %d", exp, got)
-		}
-	}
-	{
-		got := 0
-		it := child.newFastIterator()
-		for it.Next() {
-			got++
-		}
-		if exp := 200; got != exp {
-			t.Errorf("fast iterator len wrong, expected %d, got %d", exp, got)
-		}
-	}
+	// single layer iterator
+	verifyIterator(t, 200, child.newIterator())
+	// multi-layered binary iterator
+	verifyIterator(t, 200, child.newBinaryIterator())
+	// multi-layered fast iterator
+	verifyIterator(t, 200, child.newFastIterator())
 }
 
 // BenchmarkIteratorTraversal is a bit a bit notorious -- all layers contain the exact
@@ -554,7 +521,6 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 		}
 		return accounts
 	}
-
 	parent := newDiffLayer(emptyLayer{}, common.Hash{},
 		mkAccounts(200), storage)
 
@@ -654,4 +620,38 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestIteratorFlatting tests what happens when we
+// - have a live iterator on child C (parent C1 -> C2 .. CN)
+// - flattens C2 all the way into CN
+// - continues iterating
+// Right now, this "works" simply because the keys do not change -- the
+// iterator is not aware that a layer has become stale. This naive
+// solution probably won't work in the long run, however
+func TestIteratorFlattning(t *testing.T) {
+	var (
+		storage = make(map[common.Hash]map[common.Hash][]byte)
+	)
+	mkAccounts := func(args ...string) map[common.Hash][]byte {
+		accounts := make(map[common.Hash][]byte)
+		for _, h := range args {
+			accounts[common.HexToHash(h)] = randomAccount()
+		}
+		return accounts
+	}
+	// entries in multiple layers should only become output once
+	parent := newDiffLayer(emptyLayer{}, common.Hash{},
+		mkAccounts("0xaa", "0xee", "0xff", "0xf0"), storage)
+
+	child := parent.Update(common.Hash{},
+		mkAccounts("0xbb", "0xdd", "0xf0"), storage)
+
+	child = child.Update(common.Hash{},
+		mkAccounts("0xcc", "0xf0", "0xff"), storage)
+
+	it := child.newFastIterator()
+	child.parent.(*diffLayer).flatten()
+	// The parent should now be stale
+	verifyIterator(t, 7, it)
 }
