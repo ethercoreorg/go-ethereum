@@ -17,12 +17,14 @@
 package snapshot
 
 import (
-	"fmt"
+	"bytes"
+	"encoding/binary"
 	"math/big"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -39,49 +41,93 @@ var (
 	emptyCode = crypto.Keccak256Hash(nil)
 )
 
+// generatorStats is a collection of statistics gathered by the snapshot generator
+// for  logging purposes.
+type generatorStats struct {
+	origin   uint64             // Origin prefix where generation started
+	start    time.Time          // Timestamp when generation started
+	accounts uint64             // Number of accounts indexed
+	slots    uint64             // Number of storage slots indexed
+	storage  common.StorageSize // Account and storage slot size
+}
+
+// Log creates an contextual log with the given message and the context pulled
+// from the internally maintained statistics.
+func (gs *generatorStats) Log(msg string, marker []byte) {
+	var ctx []interface{}
+
+	// Figure out whether we're after or within an account
+	switch len(marker) {
+	case common.HashLength:
+		ctx = append(ctx, []interface{}{"at", common.BytesToHash(marker)}...)
+	case 2 * common.HashLength:
+		ctx = append(ctx, []interface{}{
+			"in", common.BytesToHash(marker[:common.HashLength]),
+			"at", common.BytesToHash(marker[common.HashLength:]),
+		}...)
+	}
+	// Calculate the estimated indexing time based on current stats
+	done := binary.BigEndian.Uint64(marker[:8]) - gs.origin
+	left := math.MaxUint64 - binary.BigEndian.Uint64(marker[:8])
+
+	speed := done / uint64(time.Since(gs.start)/time.Millisecond)
+	eta := time.Duration(left/speed) * time.Millisecond
+
+	log.Info(msg, append(ctx, []interface{}{
+		"accounts", gs.accounts,
+		"slots", gs.slots,
+		"storage", gs.storage,
+		"elapsed", common.PrettyDuration(time.Since(gs.start)),
+		"eta", common.PrettyDuration(eta),
+	}...)...)
+}
+
 // generateSnapshot regenerates a brand new snapshot based on an existing state
 // database and head block asynchronously. The snapshot is returned immediately
 // and generation is continued in the background until done.
-func generateSnapshot(db ethdb.KeyValueStore, journal string, root common.Hash) (snapshot, error) {
+func generateSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, root common.Hash) (snapshot, error) {
 	// Wipe any previously existing snapshot from the database
-	if err := wipeSnapshot(db); err != nil {
+	if err := wipeSnapshot(diskdb); err != nil {
 		return nil, err
 	}
-	//
-	panic("wtf")
+	// Create a new disk layer with an initialized state marker at zero
+	base := &diskLayer{
+		diskdb:    diskdb,
+		triedb:    triedb,
+		root:      root,
+		journal:   journal,
+		cache:     fastcache.New(512 * 1024 * 1024),
+		genMarker: []byte{}, // Initialized but empty!
+		genAbort:  make(chan chan *generatorStats),
+	}
+	go base.generate(&generatorStats{start: time.Now()})
+	return base, nil
 }
 
-// generateSnapshotSync regenerates a brand new snapshot based on an existing state database and head block.
-func generateSnapshotSync(db ethdb.KeyValueStore, journal string, root common.Hash) (snapshot, error) {
-	// Wipe any previously existing snapshot from the database
-	if err := wipeSnapshot(db); err != nil {
-		return nil, err
-	}
-	// Iterate the entire storage trie and re-generate the state snapshot
-	var (
-		accountCount int
-		storageCount int
-		storageNodes int
-		accountSize  common.StorageSize
-		storageSize  common.StorageSize
-		logged       time.Time
-	)
-	batch := db.NewBatch()
-	triedb := trie.NewDatabase(db)
-
-	accTrie, err := trie.NewSecure(root, triedb)
+// generate is a background thread that iterates over the state and storage tries,
+// constructing the state snapshot. All the arguments are purely for statistics
+// gethering and logging, since the method surfs the blocks as they arrive, often
+// being restarted.
+func (dl *diskLayer) generate(stats *generatorStats) {
+	// Create an account and state iterator pointing to the current generator marker
+	accTrie, err := trie.NewSecure(dl.root, dl.triedb)
 	if err != nil {
-		return nil, err
+		log.Crit("Account trie %x inaccessible for snapshot generation: %v", dl.root, err)
 	}
-	accIt := trie.NewIterator(accTrie.NodeIterator(nil))
+	var accMarker []byte
+	if len(dl.genMarker) > 0 { // []byte{} is the start, use nil for that
+		stats.Log("Resuming snapshot generation", dl.genMarker)
+		accMarker = dl.genMarker[:common.HashLength]
+	}
+	accIt := trie.NewIterator(accTrie.NodeIterator(accMarker))
+	batch := dl.diskdb.NewBatch()
+
+	// Iterate from the previous marker and continue generating the state snapshot
+	logged := time.Now()
 	for accIt.Next() {
-		var (
-			curStorageCount int
-			curStorageNodes int
-			curAccountSize  common.StorageSize
-			curStorageSize  common.StorageSize
-			accountHash     = common.BytesToHash(accIt.Key)
-		)
+		// Retrieve the current account and flatten it into the internal format
+		accountHash := common.BytesToHash(accIt.Key)
+
 		var acc struct {
 			Nonce    uint64
 			Balance  *big.Int
@@ -89,63 +135,97 @@ func generateSnapshotSync(db ethdb.KeyValueStore, journal string, root common.Ha
 			CodeHash []byte
 		}
 		if err := rlp.DecodeBytes(accIt.Value, &acc); err != nil {
-			return nil, err
+			log.Crit("Invalid account encountered during snapshot creation: %v", err)
 		}
 		data := AccountRLP(acc.Nonce, acc.Balance, acc.Root, acc.CodeHash)
-		curAccountSize += common.StorageSize(1 + common.HashLength + len(data))
 
-		rawdb.WriteAccountSnapshot(batch, accountHash, data)
-		if batch.ValueSize() > ethdb.IdealBatchSize {
-			batch.Write()
-			batch.Reset()
+		// If the account is not yet in-progress, write it out
+		if accMarker == nil || !bytes.Equal(accountHash[:], accMarker) {
+			rawdb.WriteAccountSnapshot(batch, accountHash, data)
+			stats.storage += common.StorageSize(1 + common.HashLength + len(data))
+			stats.accounts++
 		}
-		if acc.Root != emptyRoot {
-			storeTrie, err := trie.NewSecure(acc.Root, triedb)
-			if err != nil {
-				return nil, err
-			}
-			storeIt := trie.NewIterator(storeTrie.NodeIterator(nil))
-			for storeIt.Next() {
-				curStorageSize += common.StorageSize(1 + 2*common.HashLength + len(storeIt.Value))
-				curStorageCount++
+		// If we've exceeded our batch allowance or termination was requested, flush to disk
+		var abort chan *generatorStats
+		select {
+		case abort = <-dl.genAbort:
+		default:
+		}
+		if batch.ValueSize() > ethdb.IdealBatchSize || abort != nil {
+			// Only write and set the marker if we actually did something useful
+			if batch.ValueSize() > 0 {
+				batch.Write()
+				batch.Reset()
 
+				dl.lock.Lock()
+				dl.genMarker = accountHash[:]
+				dl.lock.Unlock()
+			}
+			if abort != nil {
+				stats.Log("Aborting snapshot generation", accountHash[:])
+				abort <- stats
+				return
+			}
+		}
+		// If the account is in-progress, continue where we left off (otherwise iterate all)
+		if acc.Root != emptyRoot {
+			storeTrie, err := trie.NewSecure(acc.Root, dl.triedb)
+			if err != nil {
+				log.Crit("Storage trie %x inaccessible for snapshot generation: %v", acc.Root, err)
+			}
+			var storeMarker []byte
+			if accMarker != nil && bytes.Equal(accountHash[:], accMarker) && len(dl.genMarker) > common.HashLength {
+				storeMarker = dl.genMarker[common.HashLength:]
+			}
+			storeIt := trie.NewIterator(storeTrie.NodeIterator(storeMarker))
+			for storeIt.Next() {
 				rawdb.WriteStorageSnapshot(batch, accountHash, common.BytesToHash(storeIt.Key), storeIt.Value)
-				if batch.ValueSize() > ethdb.IdealBatchSize {
-					batch.Write()
-					batch.Reset()
+				stats.storage += common.StorageSize(1 + 2*common.HashLength + len(storeIt.Value))
+				stats.slots++
+
+				// If we've exceeded our batch allowance or termination was requested, flush to disk
+				var abort chan *generatorStats
+				select {
+				case abort = <-dl.genAbort:
+				default:
+				}
+				if batch.ValueSize() > ethdb.IdealBatchSize || abort != nil {
+					// Only write and set the marker if we actually did something useful
+					if batch.ValueSize() > 0 {
+						batch.Write()
+						batch.Reset()
+
+						dl.lock.Lock()
+						dl.genMarker = append(accountHash[:], storeIt.Key...)
+						dl.lock.Unlock()
+					}
+					if abort != nil {
+						stats.Log("Aborting snapshot generation", append(accountHash[:], storeIt.Key...))
+						abort <- stats
+						return
+					}
 				}
 			}
-			curStorageNodes = storeIt.Nodes
 		}
-		accountCount++
-		storageCount += curStorageCount
-		accountSize += curAccountSize
-		storageSize += curStorageSize
-		storageNodes += curStorageNodes
-
 		if time.Since(logged) > 8*time.Second {
-			fmt.Printf("%#x: %9s + %9s (%6d slots, %6d nodes), total %9s (%d accs, %d nodes) + %9s (%d slots, %d nodes)\n", accIt.Key, curAccountSize.TerminalString(), curStorageSize.TerminalString(), curStorageCount, curStorageNodes, accountSize.TerminalString(), accountCount, accIt.Nodes, storageSize.TerminalString(), storageCount, storageNodes)
+			stats.Log("Generating state snapshot", accIt.Key)
 			logged = time.Now()
 		}
+		// Some account processed, unmark the marker
+		accMarker = nil
 	}
-	fmt.Printf("Totals: %9s (%d accs, %d nodes) + %9s (%d slots, %d nodes)\n", accountSize.TerminalString(), accountCount, accIt.Nodes, storageSize.TerminalString(), storageCount, storageNodes)
-
-	// Update the snapshot block marker and write any remainder data
-	rawdb.WriteSnapshotRoot(batch, root)
-	batch.Write()
-	batch.Reset()
-
-	// Compact the snapshot section of the database to get rid of unused space
-	log.Info("Compacting snapshot in chain database")
-	if err := db.Compact([]byte{'s'}, []byte{'s' + 1}); err != nil {
-		return nil, err
+	// Snapshot fully generated, set the marker to nil
+	if batch.ValueSize() > 0 {
+		batch.Write()
 	}
-	// New snapshot generated, construct a brand new base layer
-	cache := fastcache.New(512 * 1024 * 1024)
-	return &diskLayer{
-		journal: journal,
-		db:      db,
-		cache:   cache,
-		root:    root,
-	}, nil
+	log.Info("Generated state snapshot", "accounts", stats.accounts, "slots", stats.slots,
+		"storage", stats.storage, "elapsed", common.PrettyDuration(time.Since(stats.start)))
+
+	dl.lock.Lock()
+	dl.genMarker = nil
+	dl.lock.Unlock()
+
+	// Someone will be looking for us, wait it out
+	abort := <-dl.genAbort
+	abort <- nil
 }

@@ -96,7 +96,7 @@ func TestDiskMerge(t *testing.T) {
 	rawdb.WriteSnapshotRoot(db, baseRoot)
 
 	// Create a disk layer based on the above and cache in some data
-	snaps, err := New(db, "", baseRoot)
+	snaps, err := New(db, nil, "", baseRoot)
 	if err != nil {
 		t.Fatalf("failed to create snapshot tree: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestDiskPartialMerge(t *testing.T) {
 
 		// Create a disk layer based on the above using a random progress marker
 		// and cache in some data.
-		snaps, err := New(db, "", baseRoot)
+		snaps, err := New(db, nil, "", baseRoot)
 		if err != nil {
 			t.Fatalf("test %d: failed to create snapshot tree: %v", i, err)
 		}

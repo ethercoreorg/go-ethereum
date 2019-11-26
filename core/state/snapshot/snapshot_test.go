@@ -31,9 +31,9 @@ import (
 func TestDiskLayerExternalInvalidationFullFlatten(t *testing.T) {
 	// Create an empty base layer and a snapshot tree out of it
 	base := &diskLayer{
-		db:    rawdb.NewMemoryDatabase(),
-		root:  common.HexToHash("0x01"),
-		cache: fastcache.New(1024 * 500),
+		diskdb: rawdb.NewMemoryDatabase(),
+		root:   common.HexToHash("0x01"),
+		cache:  fastcache.New(1024 * 500),
 	}
 	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
@@ -76,9 +76,9 @@ func TestDiskLayerExternalInvalidationFullFlatten(t *testing.T) {
 func TestDiskLayerExternalInvalidationPartialFlatten(t *testing.T) {
 	// Create an empty base layer and a snapshot tree out of it
 	base := &diskLayer{
-		db:    rawdb.NewMemoryDatabase(),
-		root:  common.HexToHash("0x01"),
-		cache: fastcache.New(1024 * 500),
+		diskdb: rawdb.NewMemoryDatabase(),
+		root:   common.HexToHash("0x01"),
+		cache:  fastcache.New(1024 * 500),
 	}
 	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
@@ -124,9 +124,9 @@ func TestDiskLayerExternalInvalidationPartialFlatten(t *testing.T) {
 func TestDiffLayerExternalInvalidationFullFlatten(t *testing.T) {
 	// Create an empty base layer and a snapshot tree out of it
 	base := &diskLayer{
-		db:    rawdb.NewMemoryDatabase(),
-		root:  common.HexToHash("0x01"),
-		cache: fastcache.New(1024 * 500),
+		diskdb: rawdb.NewMemoryDatabase(),
+		root:   common.HexToHash("0x01"),
+		cache:  fastcache.New(1024 * 500),
 	}
 	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
@@ -172,9 +172,9 @@ func TestDiffLayerExternalInvalidationFullFlatten(t *testing.T) {
 func TestDiffLayerExternalInvalidationPartialFlatten(t *testing.T) {
 	// Create an empty base layer and a snapshot tree out of it
 	base := &diskLayer{
-		db:    rawdb.NewMemoryDatabase(),
-		root:  common.HexToHash("0x01"),
-		cache: fastcache.New(1024 * 500),
+		diskdb: rawdb.NewMemoryDatabase(),
+		root:   common.HexToHash("0x01"),
+		cache:  fastcache.New(1024 * 500),
 	}
 	snaps := &Tree{
 		layers: map[common.Hash]snapshot{
@@ -236,9 +236,9 @@ func TestPostCapBasicDataAccess(t *testing.T) {
 	}
 	// Create a starting base layer and a snapshot tree out of it
 	base := &diskLayer{
-		db:    rawdb.NewMemoryDatabase(),
-		root:  common.HexToHash("0x01"),
-		cache: fastcache.New(1024 * 500),
+		diskdb: rawdb.NewMemoryDatabase(),
+		root:   common.HexToHash("0x01"),
+		cache:  fastcache.New(1024 * 500),
 	}
 	snaps := &Tree{
 		layers: map[common.Hash]snapshot{

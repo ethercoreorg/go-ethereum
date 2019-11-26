@@ -32,11 +32,11 @@ import (
 // blocks.
 func wipeSnapshot(db ethdb.KeyValueStore) error {
 	// Iterate over the snapshot key-range and delete all of them
-	log.Info("Deleting previous snapshot account leftovers")
+	log.Info("Deleting snapshot account leftovers")
 	if err := wipeKeyRange(db, "accounts", rawdb.SnapshotAccountPrefix, len(rawdb.SnapshotAccountPrefix)+common.HashLength); err != nil {
 		return err
 	}
-	log.Info("Deleting previous snapshot storage leftovers")
+	log.Info("Deleting snapshot storage leftovers")
 	if err := wipeKeyRange(db, "storage", rawdb.SnapshotStoragePrefix, len(rawdb.SnapshotStoragePrefix)+2*common.HashLength); err != nil {
 		return err
 	}
@@ -58,7 +58,7 @@ func wipeSnapshot(db ethdb.KeyValueStore) error {
 	if err := db.Compact(rawdb.SnapshotStoragePrefix, end); err != nil {
 		return err
 	}
-	log.Info("Compacted snapshot area in database", "elapsed", time.Since(start))
+	log.Info("Compacted snapshot area in database", "elapsed", common.PrettyDuration(time.Since(start)))
 
 	return nil
 }
@@ -98,11 +98,15 @@ func wipeKeyRange(db ethdb.KeyValueStore, kind string, prefix []byte, keylen int
 			it = db.NewIteratorWithStart(key)
 
 			if time.Since(logged) > 8*time.Second {
-				log.Info("Deleting snapshot entries", "kind", kind, "wiped", items, "elapsed", time.Since(start))
+				log.Info("Deleting snapshot entries", "kind", kind, "wiped", items, "elapsed", common.PrettyDuration(time.Since(start)))
 				logged = time.Now()
 			}
 		}
 	}
 	it.Release()
-	return batch.Write()
+	if err := batch.Write(); err != nil {
+		return err
+	}
+	log.Info("Deleted snapshot entries", "kind", kind, "wiped", items, "elapsed", common.PrettyDuration(time.Since(start)))
+	return nil
 }

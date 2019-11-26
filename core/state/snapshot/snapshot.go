@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 var (
@@ -112,12 +113,13 @@ type Tree struct {
 //
 // If the snapshot is missing or inconsistent, the entirety is deleted and will
 // be reconstructed from scratch based on the tries in the key-value store.
-func New(db ethdb.KeyValueStore, journal string, root common.Hash) (*Tree, error) {
+func New(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, root common.Hash) (*Tree, error) {
 	// Attempt to load a previously persisted snapshot
-	head, err := loadSnapshot(db, journal, root)
+	head, err := loadSnapshot(diskdb, journal, root)
+	err = errors.New("blow up")
 	if err != nil {
 		log.Warn("Failed to load snapshot, regenerating", "err", err)
-		if head, err = generateSnapshotSync(db, journal, root); err != nil {
+		if head, err = generateSnapshot(diskdb, triedb, journal, root); err != nil {
 			return nil, err
 		}
 	}
@@ -288,7 +290,13 @@ func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) {
 
 		diff.parent = flattened
 		if flattened.memory < memory {
-			return
+			// Accumulator layer is smaller than the limit, so we can abort, unless
+			// there's a snapshot being generated currently. In that case, the trie
+			// will move fron underneath the generator so we **must** merge all the
+			// partial data down into the snapshot and restart the generation.
+			if flattened.parent.(*diskLayer).genAbort == nil {
+				return
+			}
 		}
 	default:
 		panic(fmt.Sprintf("unknown data layer: %T", parent))
@@ -309,8 +317,15 @@ func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) {
 func diffToDisk(bottom *diffLayer) *diskLayer {
 	var (
 		base  = bottom.parent.(*diskLayer)
-		batch = base.db.NewBatch()
+		batch = base.diskdb.NewBatch()
+		stats *generatorStats
 	)
+	// If the disk layer is running a snapshot generator, abort it
+	if base.genAbort != nil {
+		abort := make(chan *generatorStats)
+		base.genAbort <- abort
+		stats = <-abort
+	}
 	// Start by temporarily deleting the current snapshot block marker. This
 	// ensures that in the case of a crash, the entire snapshot is invalidated.
 	rawdb.DeleteSnapshotRoot(batch)
@@ -345,7 +360,7 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 			rawdb.DeleteAccountSnapshot(batch, hash)
 			base.cache.Set(hash[:], nil)
 
-			it := rawdb.IterateStorageSnapshots(base.db, hash)
+			it := rawdb.IterateStorageSnapshots(base.diskdb, hash)
 			for it.Next() {
 				if key := it.Key(); len(key) == 65 { // TODO(karalabe): Yuck, we should move this into the iterator
 					batch.Delete(key)
@@ -389,13 +404,22 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 	if err := batch.Write(); err != nil {
 		log.Crit("Failed to write leftover snapshot", "err", err)
 	}
-	return &diskLayer{
+	res := &diskLayer{
 		root:      bottom.root,
 		cache:     base.cache,
-		db:        base.db,
+		diskdb:    base.diskdb,
+		triedb:    base.triedb,
 		journal:   base.journal,
 		genMarker: base.genMarker,
 	}
+	// If snapshot generation hasn't finished yet, port over all the starts and
+	// continue where the previous round left off
+	if base.genMarker != nil {
+		res.genMarker = base.genMarker
+		res.genAbort = make(chan chan *generatorStats)
+		go res.generate(stats)
+	}
+	return res
 }
 
 // Journal commits an entire diff hierarchy to disk into a single journal file.
@@ -424,7 +448,7 @@ func loadSnapshot(db ethdb.KeyValueStore, journal string, root common.Hash) (sna
 	}
 	base := &diskLayer{
 		journal: journal,
-		db:      db,
+		diskdb:  db,
 		cache:   fastcache.New(512 * 1024 * 1024),
 		root:    baseRoot,
 	}
