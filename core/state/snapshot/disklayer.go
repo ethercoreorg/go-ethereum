@@ -17,15 +17,15 @@
 package snapshot
 
 import (
+	"bytes"
 	"sync"
-
-	"github.com/ethereum/go-ethereum/trie"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 // diskLayer is a low level persistent snapshot built on top of a key-value store.
@@ -37,7 +37,7 @@ type diskLayer struct {
 	root  common.Hash // Root hash of the base snapshot
 	stale bool        // Signals that the layer became stale (state progressed)
 
-	genMarker    string            // Marker for the state that's indexed during initial layer generation
+	genMarker    []byte            // Marker for the state that's indexed during initial layer generation
 	genAccountIt trie.NodeIterator // Live iterator over the account trie during initial layer generation
 	genStorageIt trie.NodeIterator // Live iterator over a storage trie during initial layer generation
 
@@ -86,6 +86,11 @@ func (dl *diskLayer) AccountRLP(hash common.Hash) ([]byte, error) {
 	if dl.stale {
 		return nil, ErrSnapshotStale
 	}
+	// If the layer is being generated, ensure the requested hash has already been
+	// covered by the generator.
+	if dl.genMarker != nil && bytes.Compare(hash[:], dl.genMarker) > 0 {
+		return nil, ErrNotCoveredYet
+	}
 	// Try to retrieve the account from the memory cache
 	if blob := dl.cache.Get(nil, hash[:]); blob != nil {
 		snapshotCleanHitMeter.Mark(1)
@@ -115,6 +120,11 @@ func (dl *diskLayer) Storage(accountHash, storageHash common.Hash) ([]byte, erro
 	}
 	key := append(accountHash[:], storageHash[:]...)
 
+	// If the layer is being generated, ensure the requested hash has already been
+	// covered by the generator.
+	if dl.genMarker != nil && bytes.Compare(key, dl.genMarker) > 0 {
+		return nil, ErrNotCoveredYet
+	}
 	// Try to retrieve the storage slot from the memory cache
 	if blob := dl.cache.Get(nil, key); blob != nil {
 		snapshotCleanHitMeter.Mark(1)

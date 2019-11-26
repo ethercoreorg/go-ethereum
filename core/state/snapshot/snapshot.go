@@ -18,6 +18,7 @@
 package snapshot
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -42,6 +43,11 @@ var (
 	// layer had been invalidated due to the chain progressing forward far enough
 	// to not maintain the layer's original state.
 	ErrSnapshotStale = errors.New("snapshot stale")
+
+	// ErrNotCoveredYet is returned from data accessors if the underlying snapshot
+	// is being generated currently and the requested data item is not yet in the
+	// range of accounts covered.
+	ErrNotCoveredYet = errors.New("not covered yet")
 
 	// errSnapshotCycle is returned if a snapshot is attempted to be inserted
 	// that forms a cycle in the snapshot tree.
@@ -111,7 +117,7 @@ func New(db ethdb.KeyValueStore, journal string, root common.Hash) (*Tree, error
 	head, err := loadSnapshot(db, journal, root)
 	if err != nil {
 		log.Warn("Failed to load snapshot, regenerating", "err", err)
-		if head, err = generateSnapshot(db, journal, root); err != nil {
+		if head, err = generateSnapshotSync(db, journal, root); err != nil {
 			return nil, err
 		}
 	}
@@ -319,6 +325,10 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 
 	// Push all the accounts into the database
 	for hash, data := range bottom.accountData {
+		// Skip any account not covered yet by the snapshot
+		if base.genMarker != nil && bytes.Compare(hash[:], base.genMarker) > 0 {
+			continue
+		}
 		if len(data) > 0 {
 			// Account was updated, push to disk
 			rawdb.WriteAccountSnapshot(batch, hash, data)
@@ -347,7 +357,18 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 	}
 	// Push all the storage slots into the database
 	for accountHash, storage := range bottom.storageData {
+		// Skip any account not covered yet by the snapshot
+		if base.genMarker != nil && bytes.Compare(accountHash[:], base.genMarker) > 0 {
+			continue
+		}
+		// Generation might be mid-account, track that case too
+		midAccount := base.genMarker != nil && bytes.Equal(accountHash[:], base.genMarker[:common.HashLength])
+
 		for storageHash, data := range storage {
+			// Skip any slot not covered yet by the snapshot
+			if midAccount && bytes.Compare(storageHash[:], base.genMarker[common.HashLength:]) > 0 {
+				continue
+			}
 			if len(data) > 0 {
 				rawdb.WriteStorageSnapshot(batch, accountHash, storageHash, data)
 				base.cache.Set(append(accountHash[:], storageHash[:]...), data)
@@ -369,10 +390,11 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 		log.Crit("Failed to write leftover snapshot", "err", err)
 	}
 	return &diskLayer{
-		root:    bottom.root,
-		cache:   base.cache,
-		db:      base.db,
-		journal: base.journal,
+		root:      bottom.root,
+		cache:     base.cache,
+		db:        base.db,
+		journal:   base.journal,
+		genMarker: base.genMarker,
 	}
 }
 

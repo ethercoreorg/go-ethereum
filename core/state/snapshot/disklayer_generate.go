@@ -39,8 +39,20 @@ var (
 	emptyCode = crypto.Keccak256Hash(nil)
 )
 
-// generateSnapshot regenerates a brand new snapshot based on an existing state database and head block.
+// generateSnapshot regenerates a brand new snapshot based on an existing state
+// database and head block asynchronously. The snapshot is returned immediately
+// and generation is continued in the background until done.
 func generateSnapshot(db ethdb.KeyValueStore, journal string, root common.Hash) (snapshot, error) {
+	// Wipe any previously existing snapshot from the database
+	if err := wipeSnapshot(db); err != nil {
+		return nil, err
+	}
+	//
+	panic("wtf")
+}
+
+// generateSnapshotSync regenerates a brand new snapshot based on an existing state database and head block.
+func generateSnapshotSync(db ethdb.KeyValueStore, journal string, root common.Hash) (snapshot, error) {
 	// Wipe any previously existing snapshot from the database
 	if err := wipeSnapshot(db); err != nil {
 		return nil, err
