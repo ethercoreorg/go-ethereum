@@ -17,7 +17,6 @@
 package snapshot
 
 import (
-	"bytes"
 	"fmt"
 	"math/big"
 	"time"
@@ -39,72 +38,6 @@ var (
 	// emptyCode is the known hash of the empty EVM bytecode.
 	emptyCode = crypto.Keccak256Hash(nil)
 )
-
-// wipeSnapshot iterates over the entire key-value database and deletes all the
-// data associated with the snapshot (accounts, storage, metadata). After all is
-// done, the snapshot range of the database is compacted to free up unused data
-// blocks.
-func wipeSnapshot(db ethdb.KeyValueStore) error {
-	// Batch deletions together to avoid holding an iterator for too long
-	var (
-		batch = db.NewBatch()
-		items int
-	)
-	// Iterate over the snapshot key-range and delete all of them
-	log.Info("Deleting previous snapshot leftovers")
-	start, logged := time.Now(), time.Now()
-
-	it := db.NewIteratorWithStart(rawdb.StateSnapshotPrefix)
-	for it.Next() {
-		// Skip any keys with the correct prefix but wrong lenth (trie nodes)
-		key := it.Key()
-		if !bytes.HasPrefix(key, rawdb.StateSnapshotPrefix) {
-			break
-		}
-		if len(key) != len(rawdb.StateSnapshotPrefix)+common.HashLength && len(key) != len(rawdb.StateSnapshotPrefix)+2*common.HashLength {
-			continue
-		}
-		// Delete the key and periodically recreate the batch and iterator
-		batch.Delete(key)
-		items++
-
-		if items%10000 == 0 {
-			// Batch too large (or iterator too long lived, flush and recreate)
-			it.Release()
-			if err := batch.Write(); err != nil {
-				return err
-			}
-			batch.Reset()
-			it = db.NewIteratorWithStart(key)
-
-			if time.Since(logged) > 8*time.Second {
-				log.Info("Deleting previous snapshot leftovers", "wiped", items, "elapsed", time.Since(start))
-				logged = time.Now()
-			}
-		}
-	}
-	it.Release()
-
-	rawdb.DeleteSnapshotRoot(batch)
-	if err := batch.Write(); err != nil {
-		return err
-	}
-	log.Info("Deleted previous snapshot leftovers", "wiped", items, "elapsed", time.Since(start))
-
-	// Compact the snapshot section of the database to get rid of unused space
-	log.Info("Compacting snapshot area in database")
-	start = time.Now()
-
-	end := common.CopyBytes(rawdb.StateSnapshotPrefix)
-	end[len(end)-1]++
-
-	if err := db.Compact(rawdb.StateSnapshotPrefix, end); err != nil {
-		return err
-	}
-	log.Info("Compacted snapshot area in database", "elapsed", time.Since(start))
-
-	return nil
-}
 
 // generateSnapshot regenerates a brand new snapshot based on an existing state database and head block.
 func generateSnapshot(db ethdb.KeyValueStore, journal string, root common.Hash) (snapshot, error) {

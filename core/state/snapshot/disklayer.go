@@ -19,6 +19,8 @@ package snapshot
 import (
 	"sync"
 
+	"github.com/ethereum/go-ethereum/trie"
+
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -34,6 +36,10 @@ type diskLayer struct {
 
 	root  common.Hash // Root hash of the base snapshot
 	stale bool        // Signals that the layer became stale (state progressed)
+
+	genMarker    string            // Marker for the state that's indexed during initial layer generation
+	genAccountIt trie.NodeIterator // Live iterator over the account trie during initial layer generation
+	genStorageIt trie.NodeIterator // Live iterator over a storage trie during initial layer generation
 
 	lock sync.RWMutex
 }
