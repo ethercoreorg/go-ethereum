@@ -91,7 +91,7 @@ func (dl *diskLayer) AccountRLP(hash common.Hash) ([]byte, error) {
 		return nil, ErrNotCoveredYet
 	}
 	// Try to retrieve the account from the memory cache
-	if blob := dl.cache.Get(nil, hash[:]); blob != nil {
+	if blob, found := dl.cache.HasGet(nil, hash[:]); found {
 		snapshotCleanHitMeter.Mark(1)
 		snapshotCleanReadMeter.Mark(int64(len(blob)))
 		return blob, nil
@@ -125,7 +125,7 @@ func (dl *diskLayer) Storage(accountHash, storageHash common.Hash) ([]byte, erro
 		return nil, ErrNotCoveredYet
 	}
 	// Try to retrieve the storage slot from the memory cache
-	if blob := dl.cache.Get(nil, key); blob != nil {
+	if blob, found := dl.cache.HasGet(nil, key); found {
 		snapshotCleanHitMeter.Mark(1)
 		snapshotCleanReadMeter.Mark(int64(len(blob)))
 		return blob, nil
