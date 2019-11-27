@@ -873,9 +873,11 @@ func (bc *BlockChain) Stop() {
 				}
 			}
 		}
-		log.Info("Writing snapshot state to disk", "root", snapBase)
-		if err := triedb.Commit(snapBase, true); err != nil {
-			log.Error("Failed to commit recent state trie", "err", err)
+		if snapBase != (common.Hash{}) {
+			log.Info("Writing snapshot state to disk", "root", snapBase)
+			if err := triedb.Commit(snapBase, true); err != nil {
+				log.Error("Failed to commit recent state trie", "err", err)
+			}
 		}
 		for !bc.triegc.Empty() {
 			triedb.Dereference(bc.triegc.PopItem().(common.Hash))

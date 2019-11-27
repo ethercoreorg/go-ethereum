@@ -25,13 +25,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/ethereum/go-ethereum/trie"
-
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 // journalMarker is a disk layer entry containing the generator progress marker.
@@ -152,7 +151,7 @@ func loadDiffLayer(parent snapshot, r *rlp.Stream) (snapshot, error) {
 // so subsequent layers know where to write to.
 func (dl *diskLayer) journal(path string) (io.WriteCloser, common.Hash, error) {
 	// If the snapshot is currenty being generated, abort it
-	stats := new(generatorStats)
+	var stats *generatorStats
 	if dl.genAbort != nil {
 		abort := make(chan *generatorStats)
 		dl.genAbort <- abort
@@ -174,13 +173,16 @@ func (dl *diskLayer) journal(path string) (io.WriteCloser, common.Hash, error) {
 		return nil, common.Hash{}, err
 	}
 	// Write out the generator marker
-	if err := rlp.Encode(file, journalMarker{
-		Done:     dl.genMarker == nil,
-		Marker:   dl.genMarker,
-		Accounts: stats.accounts,
-		Slots:    stats.slots,
-		Storage:  uint64(stats.storage),
-	}); err != nil {
+	entry := journalMarker{
+		Done:   dl.genMarker == nil,
+		Marker: dl.genMarker,
+	}
+	if stats != nil {
+		entry.Accounts = stats.accounts
+		entry.Slots = stats.slots
+		entry.Storage = uint64(stats.storage)
+	}
+	if err := rlp.Encode(file, entry); err != nil {
 		file.Close()
 		return nil, common.Hash{}, err
 	}
