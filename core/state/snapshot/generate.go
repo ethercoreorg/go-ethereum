@@ -66,36 +66,40 @@ func (gs *generatorStats) Log(msg string, marker []byte) {
 			"at", common.BytesToHash(marker[common.HashLength:]),
 		}...)
 	}
-	// Calculate the estimated indexing time based on current stats
-	done := binary.BigEndian.Uint64(marker[:8]) - gs.origin
-	left := math.MaxUint64 - binary.BigEndian.Uint64(marker[:8])
-
-	speed := done / uint64(time.Since(gs.start)/time.Millisecond)
-	eta := time.Duration(left/speed) * time.Millisecond
-
-	log.Info(msg, append(ctx, []interface{}{
+	// Add the usual measurements
+	ctx = append(ctx, []interface{}{
 		"accounts", gs.accounts,
 		"slots", gs.slots,
 		"storage", gs.storage,
 		"elapsed", common.PrettyDuration(time.Since(gs.start)),
-		"eta", common.PrettyDuration(eta),
-	}...)...)
+	}...)
+	// Calculate the estimated indexing time based on current stats
+	if done := binary.BigEndian.Uint64(marker[:8]) - gs.origin; done > 0 {
+		left := math.MaxUint64 - binary.BigEndian.Uint64(marker[:8])
+
+		speed := done/uint64(time.Since(gs.start)/time.Millisecond+1) + 1 // +1s to avoid division by zero
+		ctx = append(ctx, []interface{}{
+			"eta", common.PrettyDuration(time.Duration(left/speed) * time.Millisecond),
+		}...)
+	}
+	log.Info(msg, ctx...)
 }
 
 // generateSnapshot regenerates a brand new snapshot based on an existing state
 // database and head block asynchronously. The snapshot is returned immediately
 // and generation is continued in the background until done.
-func generateSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, root common.Hash) (snapshot, error) {
+func generateSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, root common.Hash) (snapshot, error) {
 	// Wipe any previously existing snapshot from the database
 	if err := wipeSnapshot(diskdb); err != nil {
 		return nil, err
 	}
+	rawdb.WriteSnapshotRoot(diskdb, root)
+
 	// Create a new disk layer with an initialized state marker at zero
 	base := &diskLayer{
 		diskdb:    diskdb,
 		triedb:    triedb,
 		root:      root,
-		journal:   journal,
 		cache:     fastcache.New(512 * 1024 * 1024),
 		genMarker: []byte{}, // Initialized but empty!
 		genAbort:  make(chan chan *generatorStats),
@@ -112,7 +116,12 @@ func (dl *diskLayer) generate(stats *generatorStats) {
 	// Create an account and state iterator pointing to the current generator marker
 	accTrie, err := trie.NewSecure(dl.root, dl.triedb)
 	if err != nil {
-		log.Crit("Account trie %x inaccessible for snapshot generation: %v", dl.root, err)
+		// The account trie is missing (GC), surf the chain until one becomes available
+		stats.Log("Snapshot trie missing, pausing", dl.genMarker)
+
+		abort := <-dl.genAbort
+		abort <- stats
+		return
 	}
 	var accMarker []byte
 	if len(dl.genMarker) > 0 { // []byte{} is the start, use nil for that
@@ -135,7 +144,7 @@ func (dl *diskLayer) generate(stats *generatorStats) {
 			CodeHash []byte
 		}
 		if err := rlp.DecodeBytes(accIt.Value, &acc); err != nil {
-			log.Crit("Invalid account encountered during snapshot creation: %v", err)
+			log.Crit("Invalid account encountered during snapshot creation", "err", err)
 		}
 		data := AccountRLP(acc.Nonce, acc.Balance, acc.Root, acc.CodeHash)
 
@@ -171,7 +180,7 @@ func (dl *diskLayer) generate(stats *generatorStats) {
 		if acc.Root != emptyRoot {
 			storeTrie, err := trie.NewSecure(acc.Root, dl.triedb)
 			if err != nil {
-				log.Crit("Storage trie %x inaccessible for snapshot generation: %v", acc.Root, err)
+				log.Crit("Storage trie inaccessible for snapshot generation", "err", err)
 			}
 			var storeMarker []byte
 			if accMarker != nil && bytes.Equal(accountHash[:], accMarker) && len(dl.genMarker) > common.HashLength {

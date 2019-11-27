@@ -228,18 +228,6 @@ func (dl *diffLayer) flatten() snapshot {
 	}
 }
 
-// Journal commits an entire diff hierarchy to disk into a single journal file.
-// This is meant to be used during shutdown to persist the snapshot without
-// flattening everything down (bad for reorgs).
-func (dl *diffLayer) Journal() error {
-	writer, err := dl.journal()
-	if err != nil {
-		return err
-	}
-	writer.Close()
-	return nil
-}
-
 // AccountList returns a sorted list of all accounts in this difflayer.
 func (dl *diffLayer) AccountList() []common.Hash {
 	dl.lock.Lock()

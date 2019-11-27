@@ -851,7 +851,8 @@ func (bc *BlockChain) Stop() {
 	bc.wg.Wait()
 
 	// Ensure that the entirety of the state snapshot is journalled to disk.
-	if err := bc.snaps.Journal(bc.CurrentBlock().Root()); err != nil {
+	snapBase, err := bc.snaps.Journal(bc.CurrentBlock().Root(), "snapshot.rlp")
+	if err != nil {
 		log.Error("Failed to journal state snapshot", "err", err)
 	}
 	// Ensure the state of a recent block is also stored to disk before exiting.
@@ -871,6 +872,10 @@ func (bc *BlockChain) Stop() {
 					log.Error("Failed to commit recent state trie", "err", err)
 				}
 			}
+		}
+		log.Info("Writing snapshot state to disk", "root", snapBase)
+		if err := triedb.Commit(snapBase, true); err != nil {
+			log.Error("Failed to commit recent state trie", "err", err)
 		}
 		for !bc.triegc.Empty() {
 			triedb.Dereference(bc.triegc.PopItem().(common.Hash))

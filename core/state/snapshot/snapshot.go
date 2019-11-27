@@ -21,16 +21,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"sync"
 
-	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
-	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
@@ -83,10 +81,10 @@ type snapshot interface {
 	// copying everything.
 	Update(blockRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer
 
-	// Journal commits an entire diff hierarchy to disk into a single journal file.
+	// journal commits an entire diff hierarchy to disk into a single journal file.
 	// This is meant to be used during shutdown to persist the snapshot without
 	// flattening everything down (bad for reorgs).
-	Journal() error
+	journal(path string) (io.WriteCloser, common.Hash, error)
 
 	// Stale return whether this layer has become stale (was flattened across) or
 	// if it's still live.
@@ -115,11 +113,10 @@ type Tree struct {
 // be reconstructed from scratch based on the tries in the key-value store.
 func New(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, root common.Hash) (*Tree, error) {
 	// Attempt to load a previously persisted snapshot
-	head, err := loadSnapshot(diskdb, journal, root)
-	err = errors.New("blow up")
+	head, err := loadSnapshot(diskdb, triedb, journal, root)
 	if err != nil {
 		log.Warn("Failed to load snapshot, regenerating", "err", err)
-		if head, err = generateSnapshot(diskdb, triedb, journal, root); err != nil {
+		if head, err = generateSnapshot(diskdb, triedb, root); err != nil {
 			return nil, err
 		}
 	}
@@ -409,12 +406,14 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 		cache:     base.cache,
 		diskdb:    base.diskdb,
 		triedb:    base.triedb,
-		journal:   base.journal,
 		genMarker: base.genMarker,
 	}
 	// If snapshot generation hasn't finished yet, port over all the starts and
-	// continue where the previous round left off
-	if base.genMarker != nil {
+	// continue where the previous round left off.
+	//
+	// Note, the `base.genAbort` comparison is not used normally, it's checked
+	// to allow the tests to play with the marker without triggering this path.
+	if base.genMarker != nil && base.genAbort != nil {
 		res.genMarker = base.genMarker
 		res.genAbort = make(chan chan *generatorStats)
 		go res.generate(stats)
@@ -425,54 +424,22 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 // Journal commits an entire diff hierarchy to disk into a single journal file.
 // This is meant to be used during shutdown to persist the snapshot without
 // flattening everything down (bad for reorgs).
-func (t *Tree) Journal(blockRoot common.Hash) error {
+//
+// The method returns the root hash of the base layer that needs to be persisted
+// to disk as a trie too to allow continuing any pending generation op.
+func (t *Tree) Journal(root common.Hash, path string) (common.Hash, error) {
 	// Retrieve the head snapshot to journal from var snap snapshot
-	snap := t.Snapshot(blockRoot)
+	snap := t.Snapshot(root)
 	if snap == nil {
-		return fmt.Errorf("snapshot [%#x] missing", blockRoot)
+		return common.Hash{}, fmt.Errorf("snapshot [%#x] missing", root)
 	}
 	// Run the journaling
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	return snap.(snapshot).Journal()
-}
-
-// loadSnapshot loads a pre-existing state snapshot backed by a key-value store.
-func loadSnapshot(db ethdb.KeyValueStore, journal string, root common.Hash) (snapshot, error) {
-	// Retrieve the block number and hash of the snapshot, failing if no snapshot
-	// is present in the database (or crashed mid-update).
-	baseRoot := rawdb.ReadSnapshotRoot(db)
-	if baseRoot == (common.Hash{}) {
-		return nil, errors.New("missing or corrupted snapshot")
-	}
-	base := &diskLayer{
-		journal: journal,
-		diskdb:  db,
-		cache:   fastcache.New(512 * 1024 * 1024),
-		root:    baseRoot,
-	}
-	// Load all the snapshot diffs from the journal, failing if their chain is broken
-	// or does not lead from the disk snapshot to the specified head.
-	if _, err := os.Stat(journal); os.IsNotExist(err) {
-		// Journal doesn't exist, don't worry if it's not supposed to
-		if baseRoot != root {
-			return nil, fmt.Errorf("snapshot journal missing, head doesn't match snapshot: have %#x, want %#x", baseRoot, root)
-		}
-		return base, nil
-	}
-	file, err := os.Open(journal)
+	writer, base, err := snap.(snapshot).journal(path)
 	if err != nil {
-		return nil, err
+		return common.Hash{}, err
 	}
-	snapshot, err := loadDiffLayer(base, rlp.NewStream(file, 0))
-	if err != nil {
-		return nil, err
-	}
-	// Entire snapshot journal loaded, sanity check the head and return
-	// Journal doesn't exist, don't worry if it's not supposed to
-	if head := snapshot.Root(); head != root {
-		return nil, fmt.Errorf("head doesn't match snapshot: have %#x, want %#x", head, root)
-	}
-	return snapshot, nil
+	return base, writer.Close()
 }

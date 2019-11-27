@@ -18,6 +18,7 @@ package snapshot
 
 import (
 	"bytes"
+	"io"
 	"math/big"
 	"math/rand"
 	"os"
@@ -192,7 +193,7 @@ func (emptyLayer) Update(blockRoot common.Hash, accounts map[common.Hash][]byte,
 	panic("implement me")
 }
 
-func (emptyLayer) Journal() error {
+func (emptyLayer) journal(path string) (io.WriteCloser, common.Hash, error) {
 	panic("implement me")
 }
 
@@ -357,17 +358,14 @@ func BenchmarkJournal(b *testing.B) {
 		}
 		return newDiffLayer(parent, common.Hash{}, accounts, storage)
 	}
-	var layer snapshot
-	layer = &diskLayer{
-		journal: path.Join(os.TempDir(), "difflayer_journal.tmp"),
-	}
+	layer := snapshot(new(diskLayer))
 	for i := 1; i < 128; i++ {
 		layer = fill(layer)
 	}
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		f, _ := layer.(*diffLayer).journal()
+		f, _, _ := layer.journal(path.Join(os.TempDir(), "difflayer_journal.tmp"))
 		f.Close()
 	}
 }

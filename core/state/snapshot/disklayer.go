@@ -30,10 +30,9 @@ import (
 
 // diskLayer is a low level persistent snapshot built on top of a key-value store.
 type diskLayer struct {
-	journal string              // Path of the snapshot journal to use on shutdown
-	diskdb  ethdb.KeyValueStore // Key-value store containing the base snapshot
-	triedb  *trie.Database      // Trie node cache for reconstuction purposes
-	cache   *fastcache.Cache    // Cache to avoid hitting the disk for direct access
+	diskdb ethdb.KeyValueStore // Key-value store containing the base snapshot
+	triedb *trie.Database      // Trie node cache for reconstuction purposes
+	cache  *fastcache.Cache    // Cache to avoid hitting the disk for direct access
 
 	root  common.Hash // Root hash of the base snapshot
 	stale bool        // Signals that the layer became stale (state progressed)
@@ -146,10 +145,4 @@ func (dl *diskLayer) Storage(accountHash, storageHash common.Hash) ([]byte, erro
 // copying everything.
 func (dl *diskLayer) Update(blockHash common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
 	return newDiffLayer(dl, blockHash, accounts, storage)
-}
-
-// Journal commits an entire diff hierarchy to disk into a single journal file.
-func (dl *diskLayer) Journal() error {
-	// There's no journalling a disk layer
-	return nil
 }

@@ -20,6 +20,8 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/VictoriaMetrics/fastcache"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
@@ -96,9 +98,14 @@ func TestDiskMerge(t *testing.T) {
 	rawdb.WriteSnapshotRoot(db, baseRoot)
 
 	// Create a disk layer based on the above and cache in some data
-	snaps, err := New(db, nil, "", baseRoot)
-	if err != nil {
-		t.Fatalf("failed to create snapshot tree: %v", err)
+	snaps := &Tree{
+		layers: map[common.Hash]snapshot{
+			baseRoot: &diskLayer{
+				diskdb: db,
+				cache:  fastcache.New(500 * 1024),
+				root:   baseRoot,
+			},
+		},
 	}
 	base := snaps.Snapshot(baseRoot)
 	base.AccountRLP(accNoModCache)
@@ -286,9 +293,14 @@ func TestDiskPartialMerge(t *testing.T) {
 
 		// Create a disk layer based on the above using a random progress marker
 		// and cache in some data.
-		snaps, err := New(db, nil, "", baseRoot)
-		if err != nil {
-			t.Fatalf("test %d: failed to create snapshot tree: %v", i, err)
+		snaps := &Tree{
+			layers: map[common.Hash]snapshot{
+				baseRoot: &diskLayer{
+					diskdb: db,
+					cache:  fastcache.New(500 * 1024),
+					root:   baseRoot,
+				},
+			},
 		}
 		snaps.layers[baseRoot].(*diskLayer).genMarker = genMarker
 		base := snaps.Snapshot(baseRoot)
