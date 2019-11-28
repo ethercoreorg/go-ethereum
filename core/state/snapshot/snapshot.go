@@ -101,7 +101,10 @@ type snapshot interface {
 // storage data to avoid expensive multi-level trie lookups; and to allow sorted,
 // cheap iteration of the account/storage tries for sync aid.
 type Tree struct {
-	layers map[common.Hash]snapshot // Collection of all known layers // TODO(karalabe): split Clique overlaps
+	diskdb ethdb.KeyValueStore      // Persistent database to store the snapshot
+	triedb *trie.Database           // In-memory cache to access the trie through
+	cache  int                      // Megabytes permitted to use for read caches
+	layers map[common.Hash]snapshot // Collection of all known layers
 	lock   sync.RWMutex
 }
 
@@ -110,20 +113,24 @@ type Tree struct {
 // of the snapshot matches the expected one.
 //
 // If the snapshot is missing or inconsistent, the entirety is deleted and will
-// be reconstructed from scratch based on the tries in the key-value store.
-func New(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, root common.Hash) (*Tree, error) {
-	// Attempt to load a previously persisted snapshot
-	head, err := loadSnapshot(diskdb, triedb, journal, root)
-	if err != nil {
-		log.Warn("Failed to load snapshot, regenerating", "err", err)
-		if head, err = generateSnapshot(diskdb, triedb, root); err != nil {
-			return nil, err
-		}
-	}
-	// Existing snapshot loaded or one regenerated, seed all the layers
+// be reconstructed from scratch based on the tries in the key-value store, on a
+// background thread.
+func New(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, cache int, root common.Hash) *Tree {
+	// Create a new, empty snapshot tree
 	snap := &Tree{
+		diskdb: diskdb,
+		triedb: triedb,
+		cache:  cache,
 		layers: make(map[common.Hash]snapshot),
 	}
+	// Attempt to load a previously persisted snapshot and rebuild one if failed
+	head, err := loadSnapshot(diskdb, triedb, journal, cache, root)
+	if err != nil {
+		log.Warn("Failed to load snapshot, regenerating", "err", err)
+		snap.Rebuild(root)
+		return snap
+	}
+	// Existing snapshot loaded, seed all the layers
 	for head != nil {
 		snap.layers[head.Root()] = head
 
@@ -136,7 +143,7 @@ func New(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, root
 			panic(fmt.Sprintf("unknown data layer: %T", self))
 		}
 	}
-	return snap, nil
+	return snap
 }
 
 // Snapshot retrieves a snapshot belonging to the given block root, or nil if no
@@ -442,4 +449,50 @@ func (t *Tree) Journal(root common.Hash, path string) (common.Hash, error) {
 		return common.Hash{}, err
 	}
 	return base, writer.Close()
+}
+
+// Rebuild wipes all available snapshot data from the persistent database and
+// discard all caches and diff layers. Afterwards, it starts a new snapshot
+// generator with the given root hash.
+func (t *Tree) Rebuild(root common.Hash) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	// Track whether there's a wipe currently running and keep it alive if so
+	var wiper chan struct{}
+
+	// Iterate over and mark all layers stale
+	for _, layer := range t.layers {
+		switch layer := layer.(type) {
+		case *diskLayer:
+			// If the base layer is generating, abort it and save
+			if layer.genAbort != nil {
+				abort := make(chan *generatorStats)
+				layer.genAbort <- abort
+
+				if stats := <-abort; stats != nil {
+					wiper = stats.wiping
+				}
+			}
+			// Layer should be inactive now, mark it as stale
+			layer.lock.Lock()
+			layer.stale = true
+			layer.lock.Unlock()
+
+		case *diffLayer:
+			// If the layer is a simple diff, simply mark as stale
+			layer.lock.Lock()
+			layer.stale = true
+			layer.lock.Unlock()
+
+		default:
+			panic(fmt.Sprintf("unknown layer type: %T", layer))
+		}
+	}
+	// Start generating a new snapshot from scratch on a backgroung thread. The
+	// generator will run a wiper first if there's not one running right now.
+	log.Info("Rebuilding state snapshot")
+	t.layers = map[common.Hash]snapshot{
+		root: generateSnapshot(t.diskdb, t.triedb, t.cache, root, wiper),
+	}
 }

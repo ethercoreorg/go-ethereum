@@ -29,15 +29,15 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
-// journalMarker is a disk layer entry containing the generator progress marker.
-// Ideally this entire thing would be a byte slice, but rlp can't differentiate
-// between an empty slice and a nil slice, so we need to expand it.
-type journalMarker struct {
-	Done     bool
+// journalGenerator is a disk layer entry containing the generator progress marker.
+type journalGenerator struct {
+	Wiping   bool // Whether the database was in progress of being wiped
+	Done     bool // Whether the generator finished creating the snapshot
 	Marker   []byte
 	Accounts uint64
 	Slots    uint64
@@ -58,7 +58,7 @@ type journalStorage struct {
 }
 
 // loadSnapshot loads a pre-existing state snapshot backed by a key-value store.
-func loadSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, root common.Hash) (snapshot, error) {
+func loadSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal string, cache int, root common.Hash) (snapshot, error) {
 	// Retrieve the block number and hash of the snapshot, failing if no snapshot
 	// is present in the database (or crashed mid-update).
 	baseRoot := rawdb.ReadSnapshotRoot(diskdb)
@@ -68,7 +68,7 @@ func loadSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal str
 	base := &diskLayer{
 		diskdb: diskdb,
 		triedb: triedb,
-		cache:  fastcache.New(512 * 1024 * 1024),
+		cache:  fastcache.New(cache * 1024 * 1024),
 		root:   baseRoot,
 	}
 	// Open the journal, it must exist since even for 0 layer it stores whether
@@ -80,24 +80,9 @@ func loadSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal str
 	r := rlp.NewStream(file, 0)
 
 	// Read the snapshot generation progress for the disk layer
-	var marker journalMarker
-	if err := r.Decode(&marker); err != nil {
+	var generator journalGenerator
+	if err := r.Decode(&generator); err != nil {
 		return nil, fmt.Errorf("failed to load snapshot progress marker: %v", err)
-	}
-	if !marker.Done {
-		base.genMarker = marker.Marker
-		if base.genMarker == nil {
-			base.genMarker = []byte{}
-		}
-		base.genAbort = make(chan chan *generatorStats)
-
-		go base.generate(&generatorStats{
-			origin:   binary.BigEndian.Uint64(marker.Marker),
-			start:    time.Now(),
-			accounts: marker.Accounts,
-			slots:    marker.Slots,
-			storage:  common.StorageSize(marker.Storage),
-		})
 	}
 	// Load all the snapshot diffs from the journal
 	snapshot, err := loadDiffLayer(base, r)
@@ -108,6 +93,36 @@ func loadSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, journal str
 	// Journal doesn't exist, don't worry if it's not supposed to
 	if head := snapshot.Root(); head != root {
 		return nil, fmt.Errorf("head doesn't match snapshot: have %#x, want %#x", head, root)
+	}
+	// Everything loaded correctly, resume any suspended operations
+	if !generator.Done {
+		// If the generator was still wiping, restart one from scratch (fine for
+		// now as it's rare and the wiper deletes the stuff it touches anyway, so
+		// restarting won't incur a lot of extra database hops.
+		var wiper chan struct{}
+		if generator.Wiping {
+			log.Info("Resuming previous snapshot wipe")
+			wiper = wipeSnapshot(diskdb, false)
+		}
+		// Whether or not wiping was in progress, load any generator progress too
+		base.genMarker = generator.Marker
+		if base.genMarker == nil {
+			base.genMarker = []byte{}
+		}
+		base.genAbort = make(chan chan *generatorStats)
+
+		var origin uint64
+		if len(generator.Marker) >= 8 {
+			origin = binary.BigEndian.Uint64(generator.Marker)
+		}
+		go base.generate(&generatorStats{
+			wiping:   wiper,
+			origin:   origin,
+			start:    time.Now(),
+			accounts: generator.Accounts,
+			slots:    generator.Slots,
+			storage:  common.StorageSize(generator.Storage),
+		})
 	}
 	return snapshot, nil
 }
@@ -173,11 +188,12 @@ func (dl *diskLayer) journal(path string) (io.WriteCloser, common.Hash, error) {
 		return nil, common.Hash{}, err
 	}
 	// Write out the generator marker
-	entry := journalMarker{
+	entry := journalGenerator{
 		Done:   dl.genMarker == nil,
 		Marker: dl.genMarker,
 	}
 	if stats != nil {
+		entry.Wiping = (stats.wiping != nil)
 		entry.Accounts = stats.accounts
 		entry.Slots = stats.slots
 		entry.Storage = uint64(stats.storage)

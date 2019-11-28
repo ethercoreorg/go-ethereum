@@ -44,6 +44,7 @@ var (
 // generatorStats is a collection of statistics gathered by the snapshot generator
 // for  logging purposes.
 type generatorStats struct {
+	wiping   chan struct{}      // Notification channel if wiping is in progress
 	origin   uint64             // Origin prefix where generation started
 	start    time.Time          // Timestamp when generation started
 	accounts uint64             // Number of accounts indexed
@@ -74,13 +75,15 @@ func (gs *generatorStats) Log(msg string, marker []byte) {
 		"elapsed", common.PrettyDuration(time.Since(gs.start)),
 	}...)
 	// Calculate the estimated indexing time based on current stats
-	if done := binary.BigEndian.Uint64(marker[:8]) - gs.origin; done > 0 {
-		left := math.MaxUint64 - binary.BigEndian.Uint64(marker[:8])
+	if len(marker) > 0 {
+		if done := binary.BigEndian.Uint64(marker[:8]) - gs.origin; done > 0 {
+			left := math.MaxUint64 - binary.BigEndian.Uint64(marker[:8])
 
-		speed := done/uint64(time.Since(gs.start)/time.Millisecond+1) + 1 // +1s to avoid division by zero
-		ctx = append(ctx, []interface{}{
-			"eta", common.PrettyDuration(time.Duration(left/speed) * time.Millisecond),
-		}...)
+			speed := done/uint64(time.Since(gs.start)/time.Millisecond+1) + 1 // +1s to avoid division by zero
+			ctx = append(ctx, []interface{}{
+				"eta", common.PrettyDuration(time.Duration(left/speed) * time.Millisecond),
+			}...)
+		}
 	}
 	log.Info(msg, ctx...)
 }
@@ -88,24 +91,25 @@ func (gs *generatorStats) Log(msg string, marker []byte) {
 // generateSnapshot regenerates a brand new snapshot based on an existing state
 // database and head block asynchronously. The snapshot is returned immediately
 // and generation is continued in the background until done.
-func generateSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, root common.Hash) (snapshot, error) {
-	// Wipe any previously existing snapshot from the database
-	if err := wipeSnapshot(diskdb); err != nil {
-		return nil, err
+func generateSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, cache int, root common.Hash, wiper chan struct{}) *diskLayer {
+	// Wipe any previously existing snapshot from the database if no wiper is
+	// currenty in progress.
+	if wiper == nil {
+		wiper = wipeSnapshot(diskdb, true)
 	}
+	// Create a new disk layer with an initialized state marker at zero
 	rawdb.WriteSnapshotRoot(diskdb, root)
 
-	// Create a new disk layer with an initialized state marker at zero
 	base := &diskLayer{
 		diskdb:    diskdb,
 		triedb:    triedb,
 		root:      root,
-		cache:     fastcache.New(512 * 1024 * 1024),
+		cache:     fastcache.New(cache * 1024 * 1024),
 		genMarker: []byte{}, // Initialized but empty!
 		genAbort:  make(chan chan *generatorStats),
 	}
-	go base.generate(&generatorStats{start: time.Now()})
-	return base, nil
+	go base.generate(&generatorStats{wiping: wiper, start: time.Now()})
+	return base
 }
 
 // generate is a background thread that iterates over the state and storage tries,
@@ -113,19 +117,35 @@ func generateSnapshot(diskdb ethdb.KeyValueStore, triedb *trie.Database, root co
 // gethering and logging, since the method surfs the blocks as they arrive, often
 // being restarted.
 func (dl *diskLayer) generate(stats *generatorStats) {
+	// If a database wipe is in operation, wait until it's done
+	if stats.wiping != nil {
+		stats.Log("Wiper running, state snapshotting paused", dl.genMarker)
+		select {
+		// If wiper is done, resume normal mode of operation
+		case <-stats.wiping:
+			stats.wiping = nil
+			stats.start = time.Now()
+
+		// If generator was aboted during wipe, return
+		case abort := <-dl.genAbort:
+			abort <- stats
+			return
+		}
+	}
 	// Create an account and state iterator pointing to the current generator marker
 	accTrie, err := trie.NewSecure(dl.root, dl.triedb)
 	if err != nil {
 		// The account trie is missing (GC), surf the chain until one becomes available
-		stats.Log("Snapshot trie missing, pausing", dl.genMarker)
+		stats.Log("Trie missing, state snapshotting paused", dl.genMarker)
 
 		abort := <-dl.genAbort
 		abort <- stats
 		return
 	}
+	stats.Log("Resuming state snapshot generation", dl.genMarker)
+
 	var accMarker []byte
 	if len(dl.genMarker) > 0 { // []byte{} is the start, use nil for that
-		stats.Log("Resuming snapshot generation", dl.genMarker)
 		accMarker = dl.genMarker[:common.HashLength]
 	}
 	accIt := trie.NewIterator(accTrie.NodeIterator(accMarker))
@@ -171,7 +191,7 @@ func (dl *diskLayer) generate(stats *generatorStats) {
 				dl.lock.Unlock()
 			}
 			if abort != nil {
-				stats.Log("Aborting snapshot generation", accountHash[:])
+				stats.Log("Aborting state snapshot generation", accountHash[:])
 				abort <- stats
 				return
 			}
@@ -209,7 +229,7 @@ func (dl *diskLayer) generate(stats *generatorStats) {
 						dl.lock.Unlock()
 					}
 					if abort != nil {
-						stats.Log("Aborting snapshot generation", append(accountHash[:], storeIt.Key...))
+						stats.Log("Aborting state snapshot generation", append(accountHash[:], storeIt.Key...))
 						abort <- stats
 						return
 					}
