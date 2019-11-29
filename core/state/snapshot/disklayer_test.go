@@ -131,7 +131,7 @@ func TestDiskMerge(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("failed to update snapshot tree: %v", err)
 	}
-	if err := snaps.Cap(diffRoot, 0, 1); err != nil {
+	if err := snaps.Cap(diffRoot, 0); err != nil {
 		t.Fatalf("failed to flatten snapshot tree: %v", err)
 	}
 	// Retrieve all the data through the disk layer and validate it
@@ -353,7 +353,7 @@ func TestDiskPartialMerge(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("test %d: failed to update snapshot tree: %v", i, err)
 		}
-		if err := snaps.Cap(diffRoot, 0, 1); err != nil {
+		if err := snaps.Cap(diffRoot, 0); err != nil {
 			t.Fatalf("test %d: failed to flatten snapshot tree: %v", i, err)
 		}
 		// Retrieve all the data through the disk layer and validate it

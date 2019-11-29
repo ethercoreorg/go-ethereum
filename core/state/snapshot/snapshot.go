@@ -216,7 +216,7 @@ func (t *Tree) Update(blockRoot common.Hash, parentRoot common.Hash, accounts ma
 // Cap traverses downwards the snapshot tree from a head block hash until the
 // number of allowed layers are crossed. All layers beyond the permitted number
 // are flattened downwards.
-func (t *Tree) Cap(root common.Hash, layers int, memory uint64) error {
+func (t *Tree) Cap(root common.Hash, layers int) error {
 	// Retrieve the head snapshot to cap from
 	snap := t.Snapshot(root)
 	if snap == nil {
@@ -255,7 +255,7 @@ func (t *Tree) Cap(root common.Hash, layers int, memory uint64) error {
 		)
 		diff.lock.RLock()
 		bottom = diff.flatten().(*diffLayer)
-		if bottom.memory >= memory {
+		if bottom.memory >= aggregatorMemoryLimit {
 			base = diffToDisk(bottom)
 		}
 		diff.lock.RUnlock()
@@ -270,7 +270,7 @@ func (t *Tree) Cap(root common.Hash, layers int, memory uint64) error {
 
 	default:
 		// Many layers requested to be retained, cap normally
-		persisted = t.cap(diff, layers, memory)
+		persisted = t.cap(diff, layers)
 	}
 	// Remove any layer that is stale or links into a stale layer
 	children := make(map[common.Hash][]common.Hash)
@@ -314,7 +314,7 @@ func (t *Tree) Cap(root common.Hash, layers int, memory uint64) error {
 // layer limit is reached, memory cap is also enforced (but not before).
 //
 // The method returns the new disk layer if diffs were persistend into it.
-func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) *diskLayer {
+func (t *Tree) cap(diff *diffLayer, layers int) *diskLayer {
 	// Dive until we run out of layers or reach the persistent database
 	for ; layers > 2; layers-- {
 		// If we still have diff layers below, continue down
@@ -341,7 +341,7 @@ func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) *diskLayer {
 		defer diff.lock.Unlock()
 
 		diff.parent = flattened
-		if flattened.memory < memory {
+		if flattened.memory < aggregatorMemoryLimit {
 			// Accumulator layer is smaller than the limit, so we can abort, unless
 			// there's a snapshot being generated currently. In that case, the trie
 			// will move fron underneath the generator so we **must** merge all the

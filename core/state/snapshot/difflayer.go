@@ -30,6 +30,41 @@ import (
 	"github.com/steakknife/bloomfilter"
 )
 
+var (
+	// aggregatorMemoryLimit is the maximum size of the bottom-most diff layer
+	// that aggregates the writes from above until it's flushed into the disk
+	// layer.
+	//
+	// Note, bumping this up might drastically increase the size of the bloom
+	// filters that's stored in every diff layer. Don't do that without fully
+	// understanding all the implications.
+	aggregatorMemoryLimit = uint64(4 * 1024 * 1024)
+
+	// aggregatorItemLimit is an approximate number of items that will end up
+	// in the agregator layer before it's flushed out to disk. A plain account
+	// weighs around 14B (+hash), a storage slot 32B (+hash), so 50 is a very
+	// rough average of what we might see.
+	aggregatorItemLimit = aggregatorMemoryLimit / 55
+
+	// bloomTargetError is the target false positive rate when the aggregator
+	// layer is at its fullest. The actual value will probably move around up
+	// and down from this number, it's mostly a ballpark figure.
+	//
+	// Note, dropping this down might drastically increase the size of the bloom
+	// filters that's stored in every diff layer. Don't do that without fully
+	// understanding all the implications.
+	bloomTargetError = 0.02
+
+	// bloomSize is the ideal bloom filter size given the maximum number of items
+	// it's expected to hold and the target false positive error rate.
+	bloomSize = math.Ceil(float64(aggregatorItemLimit) * math.Log(bloomTargetError) / math.Log(1/math.Pow(2, math.Log(2))))
+
+	// bloomFuncs is the ideal number of bits a single entry should set in the
+	// bloom filter to keep its size to a minimum (given it's size and maximum
+	// entry count).
+	bloomFuncs = math.Round((bloomSize / float64(aggregatorItemLimit)) * math.Log(2))
+)
+
 // diffLayer represents a collection of modifications made to a state snapshot
 // after running a block on top. It contains one sorted list for the account trie
 // and one-one list for each storage tries.
@@ -153,7 +188,7 @@ func (dl *diffLayer) rebloom(origin *diskLayer) {
 		dl.diffed, _ = parent.diffed.Copy()
 		parent.lock.RUnlock()
 	} else {
-		dl.diffed, _ = bloomfilter.New(100*1024*8, 3)
+		dl.diffed, _ = bloomfilter.New(uint64(bloomSize), uint64(bloomFuncs))
 	}
 	// Iterate over all the accounts and storage slots and index them
 	for hash := range dl.accountData {
