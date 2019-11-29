@@ -18,14 +18,15 @@ package snapshot
 
 import (
 	"bytes"
-	"io"
 	"math/big"
 	"math/rand"
 	"os"
 	"path"
 	"testing"
 
+	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -62,7 +63,7 @@ func TestMergeBasics(t *testing.T) {
 		}
 	}
 	// Add some (identical) layers on top
-	parent := newDiffLayer(emptyLayer{}, common.Hash{}, accounts, storage)
+	parent := newDiffLayer(emptyLayer(), common.Hash{}, accounts, storage)
 	child := newDiffLayer(parent, common.Hash{}, accounts, storage)
 	child = newDiffLayer(child, common.Hash{}, accounts, storage)
 	child = newDiffLayer(child, common.Hash{}, accounts, storage)
@@ -123,7 +124,7 @@ func TestMergeDelete(t *testing.T) {
 	}
 
 	// Add some flip-flopping layers on top
-	parent := newDiffLayer(emptyLayer{}, common.Hash{}, flip(), storage)
+	parent := newDiffLayer(emptyLayer(), common.Hash{}, flip(), storage)
 	child := parent.Update(common.Hash{}, flop(), storage)
 	child = child.Update(common.Hash{}, flip(), storage)
 	child = child.Update(common.Hash{}, flop(), storage)
@@ -166,7 +167,7 @@ func TestInsertAndMerge(t *testing.T) {
 	{
 		var accounts = make(map[common.Hash][]byte)
 		var storage = make(map[common.Hash]map[common.Hash][]byte)
-		parent = newDiffLayer(emptyLayer{}, common.Hash{}, accounts, storage)
+		parent = newDiffLayer(emptyLayer(), common.Hash{}, accounts, storage)
 	}
 	{
 		var accounts = make(map[common.Hash][]byte)
@@ -187,34 +188,11 @@ func TestInsertAndMerge(t *testing.T) {
 	}
 }
 
-type emptyLayer struct{}
-
-func (emptyLayer) Update(blockRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
-	panic("implement me")
-}
-
-func (emptyLayer) journal(path string) (io.WriteCloser, common.Hash, error) {
-	panic("implement me")
-}
-
-func (emptyLayer) Stale() bool {
-	panic("implement me")
-}
-
-func (emptyLayer) Root() common.Hash {
-	return common.Hash{}
-}
-
-func (emptyLayer) Account(hash common.Hash) (*Account, error) {
-	return nil, nil
-}
-
-func (emptyLayer) AccountRLP(hash common.Hash) ([]byte, error) {
-	return nil, nil
-}
-
-func (emptyLayer) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
-	return nil, nil
+func emptyLayer() *diskLayer {
+	return &diskLayer{
+		diskdb: memorydb.New(),
+		cache:  fastcache.New(500 * 1024),
+	}
 }
 
 // BenchmarkSearch checks how long it takes to find a non-existing key
@@ -235,7 +213,7 @@ func BenchmarkSearch(b *testing.B) {
 		return newDiffLayer(parent, common.Hash{}, accounts, storage)
 	}
 	var layer snapshot
-	layer = emptyLayer{}
+	layer = emptyLayer()
 	for i := 0; i < 128; i++ {
 		layer = fill(layer)
 	}
@@ -273,7 +251,7 @@ func BenchmarkSearchSlot(b *testing.B) {
 		return newDiffLayer(parent, common.Hash{}, accounts, storage)
 	}
 	var layer snapshot
-	layer = emptyLayer{}
+	layer = emptyLayer()
 	for i := 0; i < 128; i++ {
 		layer = fill(layer)
 	}
@@ -314,7 +292,7 @@ func BenchmarkFlatten(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		var layer snapshot
-		layer = emptyLayer{}
+		layer = emptyLayer()
 		for i := 1; i < 128; i++ {
 			layer = fill(layer)
 		}
@@ -365,7 +343,7 @@ func BenchmarkJournal(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		f, _, _ := layer.journal(path.Join(os.TempDir(), "difflayer_journal.tmp"))
+		f, _, _ := layer.Journal(path.Join(os.TempDir(), "difflayer_journal.tmp"))
 		f.Close()
 	}
 }

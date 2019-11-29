@@ -33,10 +33,41 @@ import (
 )
 
 var (
-	snapshotCleanHitMeter   = metrics.NewRegisteredMeter("state/snapshot/clean/hit", nil)
-	snapshotCleanMissMeter  = metrics.NewRegisteredMeter("state/snapshot/clean/miss", nil)
-	snapshotCleanReadMeter  = metrics.NewRegisteredMeter("state/snapshot/clean/read", nil)
-	snapshotCleanWriteMeter = metrics.NewRegisteredMeter("state/snapshot/clean/write", nil)
+	snapshotCleanAccountHitMeter   = metrics.NewRegisteredMeter("state/snapshot/clean/account/hit", nil)
+	snapshotCleanAccountMissMeter  = metrics.NewRegisteredMeter("state/snapshot/clean/account/miss", nil)
+	snapshotCleanAccountReadMeter  = metrics.NewRegisteredMeter("state/snapshot/clean/account/read", nil)
+	snapshotCleanAccountWriteMeter = metrics.NewRegisteredMeter("state/snapshot/clean/account/write", nil)
+
+	snapshotCleanStorageHitMeter   = metrics.NewRegisteredMeter("state/snapshot/clean/storage/hit", nil)
+	snapshotCleanStorageMissMeter  = metrics.NewRegisteredMeter("state/snapshot/clean/storage/miss", nil)
+	snapshotCleanStorageReadMeter  = metrics.NewRegisteredMeter("state/snapshot/clean/storage/read", nil)
+	snapshotCleanStorageWriteMeter = metrics.NewRegisteredMeter("state/snapshot/clean/storage/write", nil)
+
+	snapshotDirtyAccountHitMeter   = metrics.NewRegisteredMeter("state/snapshot/dirty/account/hit", nil)
+	snapshotDirtyAccountMissMeter  = metrics.NewRegisteredMeter("state/snapshot/dirty/account/miss", nil)
+	snapshotDirtyAccountReadMeter  = metrics.NewRegisteredMeter("state/snapshot/dirty/account/read", nil)
+	snapshotDirtyAccountWriteMeter = metrics.NewRegisteredMeter("state/snapshot/dirty/account/write", nil)
+
+	snapshotDirtyStorageHitMeter   = metrics.NewRegisteredMeter("state/snapshot/dirty/storage/hit", nil)
+	snapshotDirtyStorageMissMeter  = metrics.NewRegisteredMeter("state/snapshot/dirty/storage/miss", nil)
+	snapshotDirtyStorageReadMeter  = metrics.NewRegisteredMeter("state/snapshot/dirty/storage/read", nil)
+	snapshotDirtyStorageWriteMeter = metrics.NewRegisteredMeter("state/snapshot/dirty/storage/write", nil)
+
+	snapshotFlushAccountItemMeter = metrics.NewRegisteredMeter("state/snapshot/flush/account/item", nil)
+	snapshotFlushAccountSizeMeter = metrics.NewRegisteredMeter("state/snapshot/flush/account/size", nil)
+	snapshotFlushStorageItemMeter = metrics.NewRegisteredMeter("state/snapshot/flush/storage/item", nil)
+	snapshotFlushStorageSizeMeter = metrics.NewRegisteredMeter("state/snapshot/flush/storage/size", nil)
+
+	snapshotBloomIndexTimer = metrics.NewRegisteredResettingTimer("state/snapshot/bloom/index", nil)
+	snapshotBloomErrorGauge = metrics.NewRegisteredGaugeFloat64("state/snapshot/bloom/error", nil)
+
+	snapshotBloomAccountTrueHitMeter  = metrics.NewRegisteredMeter("state/snapshot/bloom/account/truehit", nil)
+	snapshotBloomAccountFalseHitMeter = metrics.NewRegisteredMeter("state/snapshot/bloom/account/falsehit", nil)
+	snapshotBloomAccountMissMeter     = metrics.NewRegisteredMeter("state/snapshot/bloom/account/miss", nil)
+
+	snapshotBloomStorageTrueHitMeter  = metrics.NewRegisteredMeter("state/snapshot/bloom/storage/truehit", nil)
+	snapshotBloomStorageFalseHitMeter = metrics.NewRegisteredMeter("state/snapshot/bloom/storage/falsehit", nil)
+	snapshotBloomStorageMissMeter     = metrics.NewRegisteredMeter("state/snapshot/bloom/storage/miss", nil)
 
 	// ErrSnapshotStale is returned from data accessors if the underlying snapshot
 	// layer had been invalidated due to the chain progressing forward far enough
@@ -81,10 +112,10 @@ type snapshot interface {
 	// copying everything.
 	Update(blockRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer
 
-	// journal commits an entire diff hierarchy to disk into a single journal file.
+	// Journal commits an entire diff hierarchy to disk into a single journal file.
 	// This is meant to be used during shutdown to persist the snapshot without
 	// flattening everything down (bad for reorgs).
-	journal(path string) (io.WriteCloser, common.Hash, error)
+	Journal(path string) (io.WriteCloser, common.Hash, error)
 
 	// Stale return whether this layer has become stale (was flattened across) or
 	// if it's still live.
@@ -202,6 +233,8 @@ func (t *Tree) Cap(root common.Hash, layers int, memory uint64) error {
 	// Flattening the bottom-most diff layer requires special casing since there's
 	// no child to rewire to the grandparent. In that case we can fake a temporary
 	// child for the capping and then remove it.
+	var persisted *diskLayer
+
 	switch layers {
 	case 0:
 		// If full commit was requested, flatten the diffs and merge onto disk
@@ -237,7 +270,7 @@ func (t *Tree) Cap(root common.Hash, layers int, memory uint64) error {
 
 	default:
 		// Many layers requested to be retained, cap normally
-		t.cap(diff, layers, memory)
+		persisted = t.cap(diff, layers, memory)
 	}
 	// Remove any layer that is stale or links into a stale layer
 	children := make(map[common.Hash][]common.Hash)
@@ -260,13 +293,28 @@ func (t *Tree) Cap(root common.Hash, layers int, memory uint64) error {
 			remove(root)
 		}
 	}
+	// If the disk layer was modified, regenerate all the cummulative blooms
+	if persisted != nil {
+		var rebloom func(root common.Hash)
+		rebloom = func(root common.Hash) {
+			if diff, ok := t.layers[root].(*diffLayer); ok {
+				diff.rebloom(persisted)
+			}
+			for _, child := range children[root] {
+				rebloom(child)
+			}
+		}
+		rebloom(persisted.root)
+	}
 	return nil
 }
 
 // cap traverses downwards the diff tree until the number of allowed layers are
 // crossed. All diffs beyond the permitted number are flattened downwards. If the
 // layer limit is reached, memory cap is also enforced (but not before).
-func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) {
+//
+// The method returns the new disk layer if diffs were persistend into it.
+func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) *diskLayer {
 	// Dive until we run out of layers or reach the persistent database
 	for ; layers > 2; layers-- {
 		// If we still have diff layers below, continue down
@@ -274,14 +322,14 @@ func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) {
 			diff = parent
 		} else {
 			// Diff stack too shallow, return without modifications
-			return
+			return nil
 		}
 	}
 	// We're out of layers, flatten anything below, stopping if it's the disk or if
 	// the memory limit is not yet exceeded.
 	switch parent := diff.parent.(type) {
 	case *diskLayer:
-		return
+		return nil
 
 	case *diffLayer:
 		// Flatten the parent into the grandparent. The flattening internally obtains a
@@ -299,7 +347,7 @@ func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) {
 			// will move fron underneath the generator so we **must** merge all the
 			// partial data down into the snapshot and restart the generation.
 			if flattened.parent.(*diskLayer).genAbort == nil {
-				return
+				return nil
 			}
 		}
 	default:
@@ -314,6 +362,7 @@ func (t *Tree) cap(diff *diffLayer, layers int, memory uint64) {
 
 	t.layers[base.root] = base
 	diff.parent = base
+	return base
 }
 
 // diffToDisk merges a bottom-most diff into the persistent disk layer underneath
@@ -369,10 +418,15 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 				if key := it.Key(); len(key) == 65 { // TODO(karalabe): Yuck, we should move this into the iterator
 					batch.Delete(key)
 					base.cache.Del(key[1:])
+
+					snapshotFlushStorageItemMeter.Mark(1)
+					snapshotFlushStorageSizeMeter.Mark(int64(len(data)))
 				}
 			}
 			it.Release()
 		}
+		snapshotFlushAccountItemMeter.Mark(1)
+		snapshotFlushAccountSizeMeter.Mark(int64(len(data)))
 	}
 	// Push all the storage slots into the database
 	for accountHash, storage := range bottom.storageData {
@@ -395,6 +449,8 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 				rawdb.DeleteStorageSnapshot(batch, accountHash, storageHash)
 				base.cache.Set(append(accountHash[:], storageHash[:]...), nil)
 			}
+			snapshotFlushStorageItemMeter.Mark(1)
+			snapshotFlushStorageSizeMeter.Mark(int64(len(data)))
 		}
 		if batch.ValueSize() > ethdb.IdealBatchSize {
 			if err := batch.Write(); err != nil {
@@ -444,7 +500,7 @@ func (t *Tree) Journal(root common.Hash, path string) (common.Hash, error) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	writer, base, err := snap.(snapshot).journal(path)
+	writer, base, err := snap.(snapshot).Journal(path)
 	if err != nil {
 		return common.Hash{}, err
 	}

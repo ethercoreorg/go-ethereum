@@ -162,9 +162,9 @@ func loadDiffLayer(parent snapshot, r *rlp.Stream) (snapshot, error) {
 	return loadDiffLayer(newDiffLayer(parent, root, accountData, storageData), r)
 }
 
-// journal is the internal version of Journal that also returns the journal file
+// Journal is the internal version of Journal that also returns the journal file
 // so subsequent layers know where to write to.
-func (dl *diskLayer) journal(path string) (io.WriteCloser, common.Hash, error) {
+func (dl *diskLayer) Journal(path string) (io.WriteCloser, common.Hash, error) {
 	// If the snapshot is currenty being generated, abort it
 	var stats *generatorStats
 	if dl.genAbort != nil {
@@ -205,11 +205,11 @@ func (dl *diskLayer) journal(path string) (io.WriteCloser, common.Hash, error) {
 	return file, dl.root, nil
 }
 
-// journal is the internal version of Journal that also returns the journal file
+// Journal is the internal version of Journal that also returns the journal file
 // so subsequent layers know where to write to.
-func (dl *diffLayer) journal(path string) (io.WriteCloser, common.Hash, error) {
+func (dl *diffLayer) Journal(path string) (io.WriteCloser, common.Hash, error) {
 	// Journal the parent first
-	writer, base, err := dl.parent.journal(path)
+	writer, base, err := dl.parent.Journal(path)
 	if err != nil {
 		return nil, common.Hash{}, err
 	}

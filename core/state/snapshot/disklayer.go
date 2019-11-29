@@ -90,18 +90,21 @@ func (dl *diskLayer) AccountRLP(hash common.Hash) ([]byte, error) {
 	if dl.genMarker != nil && bytes.Compare(hash[:], dl.genMarker) > 0 {
 		return nil, ErrNotCoveredYet
 	}
+	// If we're in the disk layer, all diff layers missed
+	snapshotDirtyAccountMissMeter.Mark(1)
+
 	// Try to retrieve the account from the memory cache
 	if blob, found := dl.cache.HasGet(nil, hash[:]); found {
-		snapshotCleanHitMeter.Mark(1)
-		snapshotCleanReadMeter.Mark(int64(len(blob)))
+		snapshotCleanAccountHitMeter.Mark(1)
+		snapshotCleanAccountReadMeter.Mark(int64(len(blob)))
 		return blob, nil
 	}
 	// Cache doesn't contain account, pull from disk and cache for later
 	blob := rawdb.ReadAccountSnapshot(dl.diskdb, hash)
 	dl.cache.Set(hash[:], blob)
 
-	snapshotCleanMissMeter.Mark(1)
-	snapshotCleanWriteMeter.Mark(int64(len(blob)))
+	snapshotCleanAccountMissMeter.Mark(1)
+	snapshotCleanAccountWriteMeter.Mark(int64(len(blob)))
 
 	return blob, nil
 }
@@ -124,18 +127,21 @@ func (dl *diskLayer) Storage(accountHash, storageHash common.Hash) ([]byte, erro
 	if dl.genMarker != nil && bytes.Compare(key, dl.genMarker) > 0 {
 		return nil, ErrNotCoveredYet
 	}
+	// If we're in the disk layer, all diff layers missed
+	snapshotDirtyStorageMissMeter.Mark(1)
+
 	// Try to retrieve the storage slot from the memory cache
 	if blob, found := dl.cache.HasGet(nil, key); found {
-		snapshotCleanHitMeter.Mark(1)
-		snapshotCleanReadMeter.Mark(int64(len(blob)))
+		snapshotCleanStorageHitMeter.Mark(1)
+		snapshotCleanStorageReadMeter.Mark(int64(len(blob)))
 		return blob, nil
 	}
 	// Cache doesn't contain storage slot, pull from disk and cache for later
 	blob := rawdb.ReadStorageSnapshot(dl.diskdb, accountHash, storageHash)
 	dl.cache.Set(key, blob)
 
-	snapshotCleanMissMeter.Mark(1)
-	snapshotCleanWriteMeter.Mark(int64(len(blob)))
+	snapshotCleanStorageMissMeter.Mark(1)
+	snapshotCleanStorageWriteMeter.Mark(int64(len(blob)))
 
 	return blob, nil
 }
