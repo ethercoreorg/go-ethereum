@@ -400,6 +400,7 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 			// Account was updated, push to disk
 			rawdb.WriteAccountSnapshot(batch, hash, data)
 			base.cache.Set(hash[:], data)
+			snapshotCleanAccountWriteMeter.Mark(int64(len(data)))
 
 			if batch.ValueSize() > ethdb.IdealBatchSize {
 				if err := batch.Write(); err != nil {
@@ -444,6 +445,7 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 			if len(data) > 0 {
 				rawdb.WriteStorageSnapshot(batch, accountHash, storageHash, data)
 				base.cache.Set(append(accountHash[:], storageHash[:]...), data)
+				snapshotCleanStorageWriteMeter.Mark(int64(len(data)))
 			} else {
 				rawdb.DeleteStorageSnapshot(batch, accountHash, storageHash)
 				base.cache.Set(append(accountHash[:], storageHash[:]...), nil)
