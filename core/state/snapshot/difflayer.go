@@ -18,7 +18,6 @@ package snapshot
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -27,7 +26,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/steakknife/bloomfilter"
 )
@@ -146,49 +144,18 @@ func newDiffLayer(parent snapshot, root common.Hash, accounts map[common.Hash][]
 	}
 	switch parent := parent.(type) {
 	case *diskLayer:
-		dl.rebloom(parent)
+		dl.rebloom(parent, true)
 	case *diffLayer:
-		dl.rebloom(parent.origin)
+		dl.rebloom(parent.origin, true)
 	default:
 		panic("unknown parent type")
 	}
-	// Determine memory size and track the dirty writes
-	for _, data := range accounts {
-		dl.memory += uint64(common.HashLength + len(data))
-		snapshotDirtyAccountWriteMeter.Mark(int64(len(data)))
-	}
-	// Fill the storage hashes and sort them for the iterator
-	dl.storageList = make(map[common.Hash][]common.Hash)
-
-	for accountHash, slots := range storage {
-		// If the slots are nil, sanity check that it's a deleted account
-		if slots == nil {
-			// Ensure that the account was just marked as deleted
-			if account, ok := accounts[accountHash]; account != nil || !ok {
-				panic(fmt.Sprintf("storage in %#x nil, but account conflicts (%#x, exists: %v)", accountHash, account, ok))
-			}
-			// Everything ok, store the deletion mark and continue
-			dl.storageList[accountHash] = nil
-			continue
-		}
-		// Storage slots are not nil so entire contract was not deleted, ensure the
-		// account was just updated.
-		if account, ok := accounts[accountHash]; account == nil || !ok {
-			log.Error(fmt.Sprintf("storage in %#x exists, but account nil (exists: %v)", accountHash, ok))
-		}
-		// Determine memory size and track the dirty writes
-		for _, data := range slots {
-			dl.memory += uint64(common.HashLength + len(data))
-			snapshotDirtyStorageWriteMeter.Mark(int64(len(data)))
-		}
-	}
-	dl.memory += uint64(len(dl.storageList) * common.HashLength)
 	return dl
 }
 
 // rebloom discards the layer's current bloom and rebuilds it from scratch based
 // on the parent's and the local diffs.
-func (dl *diffLayer) rebloom(origin *diskLayer) {
+func (dl *diffLayer) rebloom(origin *diskLayer, creation bool) {
 	dl.lock.Lock()
 	defer dl.lock.Unlock()
 
@@ -208,13 +175,30 @@ func (dl *diffLayer) rebloom(origin *diskLayer) {
 		dl.diffed, _ = bloomfilter.New(uint64(bloomSize), uint64(bloomFuncs))
 	}
 	// Iterate over all the accounts and storage slots and index them
-	for hash := range dl.accountData {
+	// Also count memory consumption while we're at it
+	dl.memory = 0
+	dataSize, nHashes := uint64(0), uint64(0)
+	for hash, data := range dl.accountData {
 		dl.diffed.Add(accountBloomHasher(hash))
+		dataSize += uint64(len(data))
+		nHashes++
 	}
+	dl.memory = dataSize + nHashes*uint64(common.HashLength)
+	if creation {
+		snapshotDirtyAccountWriteMeter.Mark(int64(dataSize))
+	}
+
+	dataSize, nHashes = uint64(0), uint64(0)
 	for accountHash, slots := range dl.storageData {
-		for storageHash := range slots {
+		for storageHash, data := range slots {
 			dl.diffed.Add(storageBloomHasher{accountHash, storageHash})
+			dataSize += uint64(len(data))
+			nHashes++
 		}
+	}
+	dl.memory += dataSize + nHashes*uint64(common.HashLength)
+	if creation {
+		snapshotDirtyStorageWriteMeter.Mark(int64(dataSize))
 	}
 	// Calculate the current false positive rate and update the error rate meter.
 	// This is a bit cheating because subsequent layers will overwrite it, but it
