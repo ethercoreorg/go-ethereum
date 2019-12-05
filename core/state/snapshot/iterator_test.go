@@ -46,7 +46,7 @@ func TestIteratorBasics(t *testing.T) {
 	}
 	// Add some (identical) layers on top
 	parent := newDiffLayer(emptyLayer(), common.Hash{}, accounts, storage)
-	it := parent.newIterator()
+	it := parent.newAccountIterator()
 	verifyIterator(t, 100, it)
 }
 
@@ -57,6 +57,11 @@ type testIterator struct {
 func newTestIterator(values ...byte) *testIterator {
 	return &testIterator{values}
 }
+
+func (ti *testIterator) Seek(common.Hash) {
+	panic("implement me")
+}
+
 func (ti *testIterator) Next() bool {
 	ti.values = ti.values[1:]
 	if len(ti.values) == 0 {
@@ -65,11 +70,15 @@ func (ti *testIterator) Next() bool {
 	return true
 }
 
+func (ti *testIterator) Error() error {
+	panic("implement me")
+}
+
 func (ti *testIterator) Key() common.Hash {
 	return common.BytesToHash([]byte{ti.values[0]})
 }
 
-func (ti *testIterator) Seek(common.Hash) {
+func (ti *testIterator) Value() []byte {
 	panic("implement me")
 }
 
@@ -86,12 +95,12 @@ func TestFastIteratorBasics(t *testing.T) {
 			{9, 10}, {10, 13, 15, 16}},
 			expKeys: []byte{0, 1, 2, 7, 8, 9, 10, 13, 14, 15, 16}},
 	} {
-		var iterators []Iterator
+		var iterators []AccountIterator
 		for _, data := range tc.lists {
 			iterators = append(iterators, newTestIterator(data...))
 
 		}
-		fi := &fastIterator{
+		fi := &fastAccountIterator{
 			iterators: iterators,
 			initiated: false,
 		}
@@ -105,7 +114,7 @@ func TestFastIteratorBasics(t *testing.T) {
 	}
 }
 
-func verifyIterator(t *testing.T, expCount int, it Iterator) {
+func verifyIterator(t *testing.T, expCount int, it AccountIterator) {
 	var (
 		i    = 0
 		last = common.Hash{}
@@ -146,11 +155,11 @@ func TestIteratorTraversal(t *testing.T) {
 		mkAccounts("0xcc", "0xf0", "0xff"), storage)
 
 	// single layer iterator
-	verifyIterator(t, 3, child.newIterator())
+	verifyIterator(t, 3, child.newAccountIterator())
 	// multi-layered binary iterator
-	verifyIterator(t, 7, child.newBinaryIterator())
+	verifyIterator(t, 7, child.newBinaryAccountIterator())
 	// multi-layered fast iterator
-	verifyIterator(t, 7, child.newFastIterator())
+	verifyIterator(t, 7, child.newFastAccountIterator())
 }
 
 func TestIteratorLargeTraversal(t *testing.T) {
@@ -175,11 +184,11 @@ func TestIteratorLargeTraversal(t *testing.T) {
 			mkAccounts(200), storage)
 	}
 	// single layer iterator
-	verifyIterator(t, 200, child.newIterator())
+	verifyIterator(t, 200, child.newAccountIterator())
 	// multi-layered binary iterator
-	verifyIterator(t, 200, child.newBinaryIterator())
+	verifyIterator(t, 200, child.newBinaryAccountIterator())
 	// multi-layered fast iterator
-	verifyIterator(t, 200, child.newFastIterator())
+	verifyIterator(t, 200, child.newFastAccountIterator())
 }
 
 // BenchmarkIteratorTraversal is a bit a bit notorious -- all layers contain the exact
@@ -214,11 +223,11 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 	}
 	// We call this once before the benchmark, so the creation of
 	// sorted accountlists are not included in the results.
-	child.newBinaryIterator()
+	child.newBinaryAccountIterator()
 	b.Run("binary iterator", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
-			it := child.newBinaryIterator()
+			it := child.newBinaryAccountIterator()
 			for it.Next() {
 				got++
 			}
@@ -230,7 +239,7 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 	b.Run("fast iterator", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
-			it := child.newFastIterator()
+			it := child.newFastAccountIterator()
 			for it.Next() {
 				got++
 			}
@@ -275,11 +284,11 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 	}
 	// We call this once before the benchmark, so the creation of
 	// sorted accountlists are not included in the results.
-	child.newBinaryIterator()
+	child.newBinaryAccountIterator()
 	b.Run("binary iterator", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
-			it := child.newBinaryIterator()
+			it := child.newBinaryAccountIterator()
 			for it.Next() {
 				got++
 			}
@@ -291,7 +300,7 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 	b.Run("fast iterator", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
-			it := child.newFastIterator()
+			it := child.newFastAccountIterator()
 			for it.Next() {
 				got++
 			}
@@ -330,7 +339,7 @@ func TestIteratorFlattning(t *testing.T) {
 	child = child.Update(common.Hash{},
 		mkAccounts("0xcc", "0xf0", "0xff"), storage)
 
-	it := child.newFastIterator()
+	it := child.newFastAccountIterator()
 	child.parent.(*diffLayer).flatten()
 	// The parent should now be stale
 	verifyIterator(t, 7, it)
@@ -347,17 +356,17 @@ func TestIteratorSeek(t *testing.T) {
 	}
 	parent := newDiffLayer(emptyLayer(), common.Hash{},
 		mkAccounts("0xaa", "0xee", "0xff", "0xf0"), storage)
-	it := parent.newIterator()
+	it := AccountIterator(parent.newAccountIterator())
 	// expected: ee, f0, ff
 	it.Seek(common.HexToHash("0xdd"))
 	verifyIterator(t, 3, it)
 
-	it = parent.newIterator().(*dlIterator)
+	it = parent.newAccountIterator()
 	// expected: ee, f0, ff
 	it.Seek(common.HexToHash("0xaa"))
 	verifyIterator(t, 3, it)
 
-	it = parent.newIterator().(*dlIterator)
+	it = parent.newAccountIterator()
 	// expected: nothing
 	it.Seek(common.HexToHash("0xff"))
 	verifyIterator(t, 0, it)
@@ -368,17 +377,17 @@ func TestIteratorSeek(t *testing.T) {
 	child = child.Update(common.Hash{},
 		mkAccounts("0xcc", "0xf0", "0xff"), storage)
 
-	it = child.newFastIterator()
+	it = child.newFastAccountIterator()
 	// expected: cc, dd, ee, f0, ff
 	it.Seek(common.HexToHash("0xbb"))
 	verifyIterator(t, 5, it)
 
-	it = child.newFastIterator()
+	it = child.newFastAccountIterator()
 	it.Seek(common.HexToHash("0xef"))
 	// exp: f0, ff
 	verifyIterator(t, 2, it)
 
-	it = child.newFastIterator()
+	it = child.newFastAccountIterator()
 	it.Seek(common.HexToHash("0xf0"))
 	verifyIterator(t, 1, it)
 
