@@ -19,6 +19,7 @@ package snapshot
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 	"testing"
 
@@ -95,9 +96,10 @@ func TestFastIteratorBasics(t *testing.T) {
 			{9, 10}, {10, 13, 15, 16}},
 			expKeys: []byte{0, 1, 2, 7, 8, 9, 10, 13, 14, 15, 16}},
 	} {
-		var iterators []AccountIterator
-		for _, data := range tc.lists {
-			iterators = append(iterators, newTestIterator(data...))
+		var iterators []*iteratorPriority
+		for i, data := range tc.lists {
+			it := newTestIterator(data...)
+			iterators = append(iterators, &iteratorPriority{it, i})
 
 		}
 		fi := &fastAccountIterator{
@@ -160,6 +162,62 @@ func TestIteratorTraversal(t *testing.T) {
 	verifyIterator(t, 7, child.newBinaryAccountIterator())
 	// multi-layered fast iterator
 	verifyIterator(t, 7, child.newFastAccountIterator())
+}
+
+// TestIteratorTraversalValues tests some multi-layer iteration, where we
+// also expect the correct values to show up
+func TestIteratorTraversalValues(t *testing.T) {
+	var (
+		storage = make(map[common.Hash]map[common.Hash][]byte)
+		a       = make(map[common.Hash][]byte)
+		b       = make(map[common.Hash][]byte)
+		c       = make(map[common.Hash][]byte)
+		d       = make(map[common.Hash][]byte)
+		e       = make(map[common.Hash][]byte)
+		f       = make(map[common.Hash][]byte)
+		g       = make(map[common.Hash][]byte)
+		h       = make(map[common.Hash][]byte)
+	)
+	// entries in multiple layers should only become output once
+	for i := byte(2); i < 0xff; i++ {
+		a[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 0, i))
+		if i%2 == 0 {
+			b[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 1, i))
+		}
+		if i%4 == 0 {
+			c[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 2, i))
+		}
+		if i%8 == 0 {
+			d[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 3, i))
+		}
+		if i%16 == 0 {
+			e[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 4, i))
+		}
+		if i%32 == 0 {
+			f[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 5, i))
+		}
+		if i%64 == 0 {
+			g[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 6, i))
+		}
+		if i%128 == 0 {
+			h[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 7, i))
+		}
+	}
+	child := newDiffLayer(emptyLayer(), common.Hash{}, a, storage).
+		Update(common.Hash{}, b, storage).
+		Update(common.Hash{}, c, storage).
+		Update(common.Hash{}, d, storage).
+		Update(common.Hash{}, e, storage).
+		Update(common.Hash{}, f, storage).
+		Update(common.Hash{}, g, storage).
+		Update(common.Hash{}, h, storage)
+
+	it := child.newFastAccountIterator()
+	for it.Next() {
+		fmt.Printf("val: %v\n", string(it.Value()))
+	}
+	// multi-layered fast iterator
+	//verifyIterator(t, 7, child.newFastAccountIterator())
 }
 
 func TestIteratorLargeTraversal(t *testing.T) {
