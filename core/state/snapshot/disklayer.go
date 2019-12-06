@@ -165,4 +165,3 @@ func (dl *diskLayer) Update(blockHash common.Hash, accounts map[common.Hash][]by
 }
 
 func (dl *diskLayer) Prepare(*diskLayer) {}
-func (dl *diskLayer) Release()           {}
