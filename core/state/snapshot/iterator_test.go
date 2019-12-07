@@ -96,10 +96,10 @@ func TestFastIteratorBasics(t *testing.T) {
 			{9, 10}, {10, 13, 15, 16}},
 			expKeys: []byte{0, 1, 2, 7, 8, 9, 10, 13, 14, 15, 16}},
 	} {
-		var iterators []*iteratorPriority
+		var iterators []*weightedIterator
 		for i, data := range tc.lists {
 			it := newTestIterator(data...)
-			iterators = append(iterators, &iteratorPriority{it, i})
+			iterators = append(iterators, &weightedIterator{it, i})
 
 		}
 		fi := &fastAccountIterator{
@@ -181,19 +181,19 @@ func TestIteratorTraversalValues(t *testing.T) {
 	// entries in multiple layers should only become output once
 	for i := byte(2); i < 0xff; i++ {
 		a[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 0, i))
-		if i%2 == 0 {
+		if i > 20 && i%2 == 0 {
 			b[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 1, i))
 		}
 		if i%4 == 0 {
 			c[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 2, i))
 		}
-		if i%8 == 0 {
+		if i%7 == 0 {
 			d[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 3, i))
 		}
-		if i%16 == 0 {
+		if i%8 == 0 {
 			e[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 4, i))
 		}
-		if i%32 == 0 {
+		if i > 50 || i < 85 {
 			f[common.Hash{i}] = []byte(fmt.Sprintf("layer-%d, key %d", 5, i))
 		}
 		if i%64 == 0 {
@@ -214,10 +214,17 @@ func TestIteratorTraversalValues(t *testing.T) {
 
 	it := child.newFastAccountIterator()
 	for it.Next() {
-		fmt.Printf("val: %v\n", string(it.Value()))
+		key := it.Key()
+		exp, err := child.accountRLP(key, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := it.Value()
+		if !bytes.Equal(exp, got) {
+			t.Fatalf("Error on key %x, got %v exp %v", key, string(got), string(exp))
+		}
+		//fmt.Printf("val: %v\n", string(it.Value()))
 	}
-	// multi-layered fast iterator
-	//verifyIterator(t, 7, child.newFastAccountIterator())
 }
 
 func TestIteratorLargeTraversal(t *testing.T) {
@@ -253,8 +260,14 @@ func TestIteratorLargeTraversal(t *testing.T) {
 // same 200 accounts. That means that we need to process 2000 items, but only
 // spit out 200 values eventually.
 //
-//BenchmarkIteratorTraversal/binary_iterator-6         	    2008	    573290 ns/op	    9520 B/op	     199 allocs/op
-//BenchmarkIteratorTraversal/fast_iterator-6           	    1946	    575596 ns/op	   20146 B/op	     134 allocs/op
+// The value-fetching benchmark is easy on the binary iterator, since it never has to reach
+// down at any depth for retrieving the values -- all are on the toppmost layer
+//
+// BenchmarkIteratorTraversal/binary_iterator_keys-6         	    2239	    483674 ns/op
+// BenchmarkIteratorTraversal/binary_iterator_values-6       	    2403	    501810 ns/op
+// BenchmarkIteratorTraversal/fast_iterator_keys-6           	    1923	    677966 ns/op
+// BenchmarkIteratorTraversal/fast_iterator_values-6         	    1741	    649967 ns/op
+//
 func BenchmarkIteratorTraversal(b *testing.B) {
 
 	var storage = make(map[common.Hash]map[common.Hash][]byte)
@@ -282,7 +295,7 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 	// We call this once before the benchmark, so the creation of
 	// sorted accountlists are not included in the results.
 	child.newBinaryAccountIterator()
-	b.Run("binary iterator", func(b *testing.B) {
+	b.Run("binary iterator keys", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
 			it := child.newBinaryAccountIterator()
@@ -294,12 +307,38 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 			}
 		}
 	})
-	b.Run("fast iterator", func(b *testing.B) {
+	b.Run("binary iterator values", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			got := 0
+			it := child.newBinaryAccountIterator()
+			for it.Next() {
+				got++
+				child.accountRLP(it.Key(), 0)
+			}
+			if exp := 200; got != exp {
+				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
+			}
+		}
+	})
+	b.Run("fast iterator keys", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
 			it := child.newFastAccountIterator()
 			for it.Next() {
 				got++
+			}
+			if exp := 200; got != exp {
+				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
+			}
+		}
+	})
+	b.Run("fast iterator values", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			got := 0
+			it := child.newFastAccountIterator()
+			for it.Next() {
+				got++
+				it.Value()
 			}
 			if exp := 200; got != exp {
 				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
@@ -314,8 +353,10 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 // This is heavy on the binary iterator, which in most cases will have to
 // call recursively 100 times for the majority of the values
 //
-// BenchmarkIteratorLargeBaselayer/binary_iterator-6    	     585	   2067377 ns/op	    9520 B/op	     199 allocs/op
-// BenchmarkIteratorLargeBaselayer/fast_iterator-6      	   13198	     91043 ns/op	    8601 B/op	     118 allocs/op
+// BenchmarkIteratorLargeBaselayer/binary_iterator_(keys)-6         	     514	   1971999 ns/op
+// BenchmarkIteratorLargeBaselayer/fast_iterator_(keys)-6           	   10000	    114385 ns/op
+// BenchmarkIteratorLargeBaselayer/binary_iterator_(values)-6       	      61	  18997492 ns/op
+// BenchmarkIteratorLargeBaselayer/fast_iterator_(values)-6         	    4047	    296823 ns/op
 func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 	var storage = make(map[common.Hash]map[common.Hash][]byte)
 
@@ -343,7 +384,7 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 	// We call this once before the benchmark, so the creation of
 	// sorted accountlists are not included in the results.
 	child.newBinaryAccountIterator()
-	b.Run("binary iterator", func(b *testing.B) {
+	b.Run("binary iterator (keys)", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
 			it := child.newBinaryAccountIterator()
@@ -355,11 +396,39 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 			}
 		}
 	})
-	b.Run("fast iterator", func(b *testing.B) {
+	b.Run("fast iterator (keys)", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
 			it := child.newFastAccountIterator()
 			for it.Next() {
+				got++
+			}
+			if exp := 2000; got != exp {
+				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
+			}
+		}
+	})
+	b.Run("binary iterator (values)", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			got := 0
+			it := child.newBinaryAccountIterator()
+			for it.Next() {
+				got++
+				v := it.Key()
+				child.accountRLP(v, -0)
+			}
+			if exp := 2000; got != exp {
+				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
+			}
+		}
+	})
+
+	b.Run("fast iterator (values)", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			got := 0
+			it := child.newFastAccountIterator()
+			for it.Next() {
+				it.Value()
 				got++
 			}
 			if exp := 2000; got != exp {
@@ -451,4 +520,35 @@ func TestIteratorSeek(t *testing.T) {
 
 	it.Seek(common.HexToHash("0xff"))
 	verifyIterator(t, 0, it)
+}
+
+//BenchmarkIteratorSeek/init+seek-6         	    4328	    245477 ns/op
+func BenchmarkIteratorSeek(b *testing.B) {
+
+	var storage = make(map[common.Hash]map[common.Hash][]byte)
+	mkAccounts := func(num int) map[common.Hash][]byte {
+		accounts := make(map[common.Hash][]byte)
+		for i := 0; i < num; i++ {
+			h := common.Hash{}
+			binary.BigEndian.PutUint64(h[:], uint64(i+1))
+			accounts[h] = randomAccount()
+		}
+		return accounts
+	}
+	layer := newDiffLayer(emptyLayer(), common.Hash{}, mkAccounts(200), storage)
+	for i := 1; i < 100; i++ {
+		layer = layer.Update(common.Hash{},
+			mkAccounts(200), storage)
+	}
+	b.Run("init+seek", func(b *testing.B) {
+		b.ResetTimer()
+		seekpos := make([]byte, 20)
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			rand.Read(seekpos)
+			it := layer.newFastAccountIterator()
+			b.StartTimer()
+			it.Seek(common.BytesToHash(seekpos))
+		}
+	})
 }

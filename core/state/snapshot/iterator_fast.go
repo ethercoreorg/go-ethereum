@@ -24,26 +24,26 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-type iteratorPriority struct {
-	it   AccountIterator
-	prio int
+type weightedIterator struct {
+	it       AccountIterator
+	priority int
 }
 
 // fastAccountIterator is a more optimized multi-layer iterator which maintains a
 // direct mapping of all iterators leading down to the bottom layer
 type fastAccountIterator struct {
-	iterators []*iteratorPriority
+	iterators []*weightedIterator
 	initiated bool
 	fail      error
 }
 
-// The fast iterator does not query parents as much.
+// newFastAccountIterator creates a new fastAccountIterator
 func (dl *diffLayer) newFastAccountIterator() AccountIterator {
 	f := &fastAccountIterator{
 		initiated: false,
 	}
 	for i, it := range dl.iterators() {
-		f.iterators = append(f.iterators, &iteratorPriority{it, -i})
+		f.iterators = append(f.iterators, &weightedIterator{it, -i})
 	}
 	f.Seek(common.Hash{})
 	return f
@@ -65,8 +65,8 @@ func (fi *fastAccountIterator) Less(i, j int) bool {
 	if bDiff > 0 {
 		return false
 	}
-	// keys are equal, sort by iterator prio
-	return fi.iterators[i].prio < fi.iterators[j].prio
+	// keys are equal, sort by iterator priority
+	return fi.iterators[i].priority < fi.iterators[j].priority
 }
 
 // Swap implements sort.Interface
@@ -96,8 +96,14 @@ func (fi *fastAccountIterator) Seek(key common.Hash) {
 				seen[v] = i
 				break
 			} else {
-				// One needs to be progressed, use prio to determine which
-				if fi.iterators[other].prio < it.prio {
+				// This whole else-block can be avoided, if we instead
+				// do an inital priority-sort of the iterators. If we do that,
+				// then we'll only wind up here if a lower-priority (preferred) iterator
+				// has the same value, and then we will always just continue.
+				// However, it costs an extra sort, so it's probably not better
+
+				// One needs to be progressed, use priority to determine which
+				if fi.iterators[other].priority < it.priority {
 					// the 'it' should be progressed
 					continue
 				} else {
@@ -151,14 +157,14 @@ func (fi *fastAccountIterator) innerNext(pos int) bool {
 		return true
 	}
 	// We next:ed the elem at 'pos'. Now we may have to re-sort that elem
-	val, neighbour := fi.iterators[pos].it.Key(), fi.iterators[pos+1].it.Key()
-	diff := bytes.Compare(val[:], neighbour[:])
-	if diff < 0 {
+	var (
+		current, neighbour = fi.iterators[pos], fi.iterators[pos+1]
+		val, neighbourVal  = current.it.Key(), neighbour.it.Key()
+	)
+	if diff := bytes.Compare(val[:], neighbourVal[:]); diff < 0 {
 		// It is still in correct place
 		return true
-	}
-	prio, neighbourPrio := fi.iterators[pos].prio, fi.iterators[pos+1].prio
-	if diff == 0 && prio < neighbourPrio {
+	} else if diff == 0 && current.priority < neighbour.priority {
 		// So still in correct place, but we need to iterate on the neighbour
 		fi.innerNext(pos + 1)
 		return true
@@ -176,27 +182,24 @@ func (fi *fastAccountIterator) innerNext(pos int) bool {
 			return true
 		}
 		neighbour := fi.iterators[n+1].it.Key()
-		diff := bytes.Compare(val[:], neighbour[:])
-		if diff < 0 {
+		if diff := bytes.Compare(val[:], neighbour[:]); diff < 0 {
 			return true
-		}
-		if diff > 0 {
+		} else if diff > 0 {
 			return false
 		}
 		// The elem we're placing it next to has the same value,
 		// so whichever winds up on n+1 will need further iteraton
-		if prio < fi.iterators[n+1].prio {
+		iteratee = n + 1
+		if current.priority < fi.iterators[n+1].priority {
 			// We can drop the iterator here
-			iteratee = n + 1
 			return true
 		}
 		// We need to move it one step further
-		iteratee = n + 1
 		return false
 		// TODO benchmark which is best, this works too:
 		//iteratee = n
 		//return true
-
+		// Doing so should finish the current search earlier
 	})
 	fi.move(pos, index)
 	if iteratee != -1 {
@@ -213,7 +216,7 @@ func (fi *fastAccountIterator) move(index, newpos int) {
 	var (
 		elem   = fi.iterators[index]
 		middle = fi.iterators[index+1 : newpos+1]
-		suffix []*iteratorPriority
+		suffix []*weightedIterator
 	)
 	if newpos < len(fi.iterators)-1 {
 		suffix = fi.iterators[newpos+1:]
@@ -247,7 +250,7 @@ func (fi *fastAccountIterator) Value() []byte {
 // Debug is a convencience helper during testing
 func (fi *fastAccountIterator) Debug() {
 	for _, it := range fi.iterators {
-		fmt.Printf("[p=%v v=%v] ", it.prio, it.it.Key()[0])
+		fmt.Printf("[p=%v v=%v] ", it.priority, it.it.Key()[0])
 	}
 	fmt.Println()
 }
