@@ -283,33 +283,23 @@ func (s *stateObject) finalise() {
 }
 
 // updateTrie writes cached storage modifications into the object's storage trie.
+// It will return nil if the trie has not been loaded and no changes have been made
+// Note: It may return non-nil if the trie is already loaded due to previous changes
+// in the same block
 func (s *stateObject) updateTrie(db Database) Trie {
 	// Make sure all dirty slots are finalized into the pending storage area
 	s.finalise()
-
+	if len(s.pendingStorage) == 0 {
+		return s.trie
+	}
+	// Insert all the pending updates into the trie
+	tr := s.getTrie(db)
 	// Track the amount of time wasted on updating the storge trie
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.db.StorageUpdates += time.Since(start) }(time.Now())
 	}
 	// Retrieve the snapshot storage map for the object
 	var storage map[common.Hash][]byte
-	if s.db.snap != nil {
-		// Retrieve the old storage map, if available
-		s.db.snapLock.RLock()
-		storage = s.db.snapStorage[s.addrHash]
-		s.db.snapLock.RUnlock()
-
-		// If no old storage map was available, create a new one
-		if storage == nil {
-			storage = make(map[common.Hash][]byte)
-
-			s.db.snapLock.Lock()
-			s.db.snapStorage[s.addrHash] = storage
-			s.db.snapLock.Unlock()
-		}
-	}
-	// Insert all the pending updates into the trie
-	tr := s.getTrie(db)
 	for key, value := range s.pendingStorage {
 		// Skip noop changes, persist actual changes
 		if value == s.originStorage[key] {
@@ -326,7 +316,23 @@ func (s *stateObject) updateTrie(db Database) Trie {
 			s.setError(tr.TryUpdate(key[:], v))
 		}
 		// If state snapshotting is active, cache the data til commit
-		if storage != nil {
+		if s.db.snap != nil {
+			// lazy load storage
+			if storage == nil {
+				// Retrieve the old storage map, if available
+				s.db.snapLock.RLock()
+				storage = s.db.snapStorage[s.addrHash]
+				s.db.snapLock.RUnlock()
+
+				// If no old storage map was available, create a new one
+				if storage == nil {
+					storage = make(map[common.Hash][]byte)
+
+					s.db.snapLock.Lock()
+					s.db.snapStorage[s.addrHash] = storage
+					s.db.snapLock.Unlock()
+				}
+			}
 			storage[crypto.Keccak256Hash(key[:])] = v // v will be nil if value is 0x00
 		}
 	}
@@ -336,21 +342,27 @@ func (s *stateObject) updateTrie(db Database) Trie {
 	return tr
 }
 
-// UpdateRoot sets the trie root to the current root hash of
+// UpdateRoot sets the trie root to the current root hash of the storage
 func (s *stateObject) updateRoot(db Database) {
-	s.updateTrie(db)
-
+	if s.updateTrie(db) == nil {
+		// No change, and trie is not loaded
+		return
+	}
 	// Track the amount of time wasted on hashing the storge trie
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.db.StorageHashes += time.Since(start) }(time.Now())
 	}
 	s.data.Root = s.trie.Hash()
+	return
 }
 
 // CommitTrie the storage trie of the object to db.
 // This updates the trie root.
 func (s *stateObject) CommitTrie(db Database) error {
-	s.updateTrie(db)
+	if s.updateTrie(db) == nil {
+		// No change, and trie is not even loaded
+		return nil
+	}
 	if s.dbErr != nil {
 		return s.dbErr
 	}
