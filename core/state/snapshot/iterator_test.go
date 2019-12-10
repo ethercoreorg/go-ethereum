@@ -75,11 +75,11 @@ func (ti *testIterator) Error() error {
 	panic("implement me")
 }
 
-func (ti *testIterator) Key() common.Hash {
+func (ti *testIterator) Hash() common.Hash {
 	return common.BytesToHash([]byte{ti.values[0]})
 }
 
-func (ti *testIterator) Value() []byte {
+func (ti *testIterator) Account() []byte {
 	panic("implement me")
 }
 
@@ -96,10 +96,10 @@ func TestFastIteratorBasics(t *testing.T) {
 			{9, 10}, {10, 13, 15, 16}},
 			expKeys: []byte{0, 1, 2, 7, 8, 9, 10, 13, 14, 15, 16}},
 	} {
-		var iterators []*weightedIterator
+		var iterators []*weightedAccountIterator
 		for i, data := range tc.lists {
 			it := newTestIterator(data...)
-			iterators = append(iterators, &weightedIterator{it, i})
+			iterators = append(iterators, &weightedAccountIterator{it, i})
 
 		}
 		fi := &fastAccountIterator{
@@ -108,7 +108,7 @@ func TestFastIteratorBasics(t *testing.T) {
 		}
 		count := 0
 		for fi.Next() {
-			if got, exp := fi.Key()[31], tc.expKeys[count]; exp != got {
+			if got, exp := fi.Hash()[31], tc.expKeys[count]; exp != got {
 				t.Errorf("tc %d, [%d]: got %d exp %d", i, count, got, exp)
 			}
 			count++
@@ -122,7 +122,7 @@ func verifyIterator(t *testing.T, expCount int, it AccountIterator) {
 		last = common.Hash{}
 	)
 	for it.Next() {
-		v := it.Key()
+		v := it.Hash()
 		if bytes.Compare(last[:], v[:]) >= 0 {
 			t.Errorf("Wrong order:\n%x \n>=\n%x", last, v)
 		}
@@ -214,16 +214,16 @@ func TestIteratorTraversalValues(t *testing.T) {
 
 	it := child.newFastAccountIterator()
 	for it.Next() {
-		key := it.Key()
+		key := it.Hash()
 		exp, err := child.accountRLP(key, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := it.Value()
+		got := it.Account()
 		if !bytes.Equal(exp, got) {
 			t.Fatalf("Error on key %x, got %v exp %v", key, string(got), string(exp))
 		}
-		//fmt.Printf("val: %v\n", string(it.Value()))
+		//fmt.Printf("val: %v\n", string(it.Account()))
 	}
 }
 
@@ -313,7 +313,7 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 			it := child.newBinaryAccountIterator()
 			for it.Next() {
 				got++
-				child.accountRLP(it.Key(), 0)
+				child.accountRLP(it.Hash(), 0)
 			}
 			if exp := 200; got != exp {
 				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
@@ -338,7 +338,7 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 			it := child.newFastAccountIterator()
 			for it.Next() {
 				got++
-				it.Value()
+				it.Account()
 			}
 			if exp := 200; got != exp {
 				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
@@ -414,7 +414,7 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 			it := child.newBinaryAccountIterator()
 			for it.Next() {
 				got++
-				v := it.Key()
+				v := it.Hash()
 				child.accountRLP(v, -0)
 			}
 			if exp := 2000; got != exp {
@@ -428,7 +428,7 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 			got := 0
 			it := child.newFastAccountIterator()
 			for it.Next() {
-				it.Value()
+				it.Account()
 				got++
 			}
 			if exp := 2000; got != exp {

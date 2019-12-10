@@ -53,7 +53,7 @@ func (dl *diffLayer) newBinaryAccountIterator() AccountIterator {
 
 // Seek steps the iterator forward as many elements as needed, so that after
 // calling Next(), the iterator will be at a key higher than the given hash.
-func (it *binaryAccountIterator) Seek(key common.Hash) {
+func (it *binaryAccountIterator) Seek(hash common.Hash) {
 	panic("todo: implement")
 }
 
@@ -64,9 +64,9 @@ func (it *binaryAccountIterator) Next() bool {
 	if it.aDone && it.bDone {
 		return false
 	}
-	nextB := it.b.Key()
+	nextB := it.b.Hash()
 first:
-	nextA := it.a.Key()
+	nextA := it.a.Hash()
 	if it.aDone {
 		it.bDone = !it.b.Next()
 		it.k = nextB
@@ -97,15 +97,15 @@ func (it *binaryAccountIterator) Error() error {
 	return it.fail
 }
 
-// Key returns the hash of the account the iterator is currently at.
-func (it *binaryAccountIterator) Key() common.Hash {
+// Hash returns the hash of the account the iterator is currently at.
+func (it *binaryAccountIterator) Hash() common.Hash {
 	return it.k
 }
 
-// Value returns the RLP encoded slim account the iterator is currently at, or
+// Account returns the RLP encoded slim account the iterator is currently at, or
 // nil if the iterated snapshot stack became stale (you can check Error after
 // to see if it failed or not).
-func (it *binaryAccountIterator) Value() []byte {
+func (it *binaryAccountIterator) Account() []byte {
 	blob, err := it.a.layer.AccountRLP(it.k)
 	if err != nil {
 		it.fail = err

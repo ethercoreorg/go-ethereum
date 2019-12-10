@@ -39,12 +39,12 @@ type AccountIterator interface {
 	// caused a premature iteration exit (e.g. snapshot stack becoming stale).
 	Error() error
 
-	// Key returns the hash of the account the iterator is currently at.
-	Key() common.Hash
+	// Hash returns the hash of the account the iterator is currently at.
+	Hash() common.Hash
 
-	// Value returns the RLP encoded slim account the iterator is currently at.
+	// Account returns the RLP encoded slim account the iterator is currently at.
 	// An error will be returned if the iterator becomes invalid (e.g. snaph
-	Value() []byte
+	Account() []byte
 }
 
 // diffAccountIterator is an account iterator that steps over the accounts (both
@@ -87,16 +87,16 @@ func (it *diffAccountIterator) Error() error {
 	return nil
 }
 
-// Key returns the hash of the account the iterator is currently at.
-func (it *diffAccountIterator) Key() common.Hash {
+// Hash returns the hash of the account the iterator is currently at.
+func (it *diffAccountIterator) Hash() common.Hash {
 	if it.index < len(it.layer.accountList) {
 		return it.layer.accountList[it.index]
 	}
 	return common.Hash{}
 }
 
-// Value returns the RLP encoded slim account the iterator is currently at.
-func (it *diffAccountIterator) Value() []byte {
+// Account returns the RLP encoded slim account the iterator is currently at.
+func (it *diffAccountIterator) Account() []byte {
 	it.layer.lock.RLock()
 	defer it.layer.lock.RUnlock()
 

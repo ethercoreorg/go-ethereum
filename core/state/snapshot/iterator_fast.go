@@ -24,90 +24,110 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-type weightedIterator struct {
+// weightedAccountIterator is an account iterator with an assigned weight. It is
+// used to prioritise which account is the correct one if multiple iterators find
+// the same one (modified in multiple consecutive blocks).
+type weightedAccountIterator struct {
 	it       AccountIterator
 	priority int
 }
 
 // fastAccountIterator is a more optimized multi-layer iterator which maintains a
-// direct mapping of all iterators leading down to the bottom layer
+// direct mapping of all iterators leading down to the bottom layer.
 type fastAccountIterator struct {
-	iterators []*weightedIterator
+	iterators []*weightedAccountIterator
 	initiated bool
 	fail      error
 }
 
-// newFastAccountIterator creates a new fastAccountIterator
+// newFastAccountIterator creates a new hierarhical account iterator with one
+// element per diff layer. The returned combo iterator can be used to walk over
+// the entire snapshot diff stack simultaneously.
 func (dl *diffLayer) newFastAccountIterator() AccountIterator {
-	f := &fastAccountIterator{
-		initiated: false,
-	}
+	fi := new(fastAccountIterator)
 	for i, it := range dl.iterators() {
-		f.iterators = append(f.iterators, &weightedIterator{it, -i})
+		fi.iterators = append(fi.iterators, &weightedAccountIterator{
+			it:       it,
+			priority: -i,
+		})
 	}
-	f.Seek(common.Hash{})
-	return f
+	fi.Seek(common.Hash{})
+	return fi
 }
 
-// Len returns the number of active iterators
+// Len implements sort.Interface, returning the number of active iterators.
 func (fi *fastAccountIterator) Len() int {
 	return len(fi.iterators)
 }
 
-// Less implements sort.Interface
+// Less implements sort.Interface, returning which of two iterators in the stack
+// is before the other.
 func (fi *fastAccountIterator) Less(i, j int) bool {
-	a := fi.iterators[i].it.Key()
-	b := fi.iterators[j].it.Key()
-	bDiff := bytes.Compare(a[:], b[:])
-	if bDiff < 0 {
+	// Order the iterators primarilly by the account hashes
+	hashI := fi.iterators[i].it.Hash()
+	hashJ := fi.iterators[j].it.Hash()
+
+	switch bytes.Compare(hashI[:], hashJ[:]) {
+	case -1:
 		return true
-	}
-	if bDiff > 0 {
+	case 1:
 		return false
 	}
-	// keys are equal, sort by iterator priority
+	// Same account in multiple layers, split by priority
 	return fi.iterators[i].priority < fi.iterators[j].priority
 }
 
-// Swap implements sort.Interface
+// Swap implements sort.Interface, swapping two entries in the iterator stack.
 func (fi *fastAccountIterator) Swap(i, j int) {
 	fi.iterators[i], fi.iterators[j] = fi.iterators[j], fi.iterators[i]
 }
 
-func (fi *fastAccountIterator) Seek(key common.Hash) {
-	// We need to apply this across all iterators
-	var seen = make(map[common.Hash]int)
+// Seek steps the iterator forward as many elements as needed, so that after
+// calling Next(), the iterator will be at a key higher than the given hash.
+func (fi *fastAccountIterator) Seek(hash common.Hash) {
+	// Track which account hashes are iterators positioned on
+	var positioned = make(map[common.Hash]int)
 
-	length := len(fi.iterators)
+	// Position all iterators and track how many remain live
 	for i := 0; i < len(fi.iterators); i++ {
-		//for i, it := range fi.iterators {
+		// Position the next iterator in line
 		it := fi.iterators[i]
-		it.it.Seek(key)
+		it.it.Seek(hash)
+
+		// Retrieve the first element and if it clashes with a previous iterator,
+		// advance either the current one or the old one. Repeat until nothing is
+		// clashing any more.
 		for {
+			// If the iterator is exhausted, drop it off the end
 			if !it.it.Next() {
-				// To be removed
-				// swap it to the last position for now
-				fi.iterators[i], fi.iterators[length-1] = fi.iterators[length-1], fi.iterators[i]
-				length--
+				last := len(fi.iterators) - 1
+
+				fi.iterators[i] = fi.iterators[last]
+				fi.iterators[last] = nil
+				fi.iterators = fi.iterators[:last]
+
+				i-- // TODO(karalabe): this was missing, add a test that catches it
 				break
 			}
-			v := it.it.Key()
-			if other, exist := seen[v]; !exist {
-				seen[v] = i
+			// The iterator is still alive, check for collisions with previous ones
+			hash := it.it.Hash()
+			if other, exist := positioned[hash]; !exist {
+				positioned[hash] = i
 				break
 			} else {
+				// Iterators collide, one needs to be progressed, use priority to
+				// determine which.
+				//
 				// This whole else-block can be avoided, if we instead
 				// do an inital priority-sort of the iterators. If we do that,
 				// then we'll only wind up here if a lower-priority (preferred) iterator
 				// has the same value, and then we will always just continue.
 				// However, it costs an extra sort, so it's probably not better
-
-				// One needs to be progressed, use priority to determine which
 				if fi.iterators[other].priority < it.priority {
-					// the 'it' should be progressed
+					// The 'it' should be progressed
 					continue
 				} else {
-					// the 'other' should be progressed - swap them
+					// The 'other' should be progressed, swap them
 					it = fi.iterators[other]
 					fi.iterators[other], fi.iterators[i] = fi.iterators[i], fi.iterators[other]
 					continue
@@ -115,15 +135,12 @@ func (fi *fastAccountIterator) Seek(key common.Hash) {
 			}
 		}
 	}
-	// Now remove those that were placed in the end
-	fi.iterators = fi.iterators[:length]
-	// The list is now totally unsorted, need to re-sort the entire list
+	// Re-sort the entire list
 	sort.Sort(fi)
 	fi.initiated = false
 }
 
-// Next implements the Iterator interface. It returns false if no more elemnts
-// can be retrieved (false == exhausted)
+// Next steps the iterator forward one element, returning false if exhausted.
 func (fi *fastAccountIterator) Next() bool {
 	if len(fi.iterators) == 0 {
 		return false
@@ -134,101 +151,86 @@ func (fi *fastAccountIterator) Next() bool {
 		fi.initiated = true
 		return true
 	}
-	return fi.innerNext(0)
+	return fi.next(0)
 }
 
-// innerNext handles the next operation internally,
-// and should be invoked when we know that two elements in the list may have
-// the same value.
-// For example, if the list becomes [2,3,5,5,8,9,10], then we should invoke
-// innerNext(3), which will call Next on elem 3 (the second '5'). It will continue
-// along the list and apply the same operation if needed
-func (fi *fastAccountIterator) innerNext(pos int) bool {
-	if !fi.iterators[pos].it.Next() {
-		//Exhausted, remove this iterator
-		fi.remove(pos)
-		if len(fi.iterators) == 0 {
-			return false
-		}
+// next handles the next operation internally and should be invoked when we know
+// that two elements in the list may have the same value.
+//
+// For example, if the iterated hashes become [2,3,5,5,8,9,10], then we should
+// invoke next(3), which will call Next on elem 3 (the second '5') and will
+// cascade along the list, applying the same operation if needed.
+func (fi *fastAccountIterator) next(idx int) bool {
+	// If this particular iterator got exhausted, remove it and return true (the
+	// next one is surely not exhausted yet, otherwise it would have been removed
+	// already).
+	if !fi.iterators[idx].it.Next() {
+		fi.iterators = append(fi.iterators[:idx], fi.iterators[idx+1:]...)
+		return len(fi.iterators) > 0
+	}
+	// If there's noone left to cascade into, return
+	if idx == len(fi.iterators)-1 {
 		return true
 	}
-	if pos == len(fi.iterators)-1 {
-		// Only one iterator left
-		return true
-	}
-	// We next:ed the elem at 'pos'. Now we may have to re-sort that elem
+	// We next-ed the iterator at 'idx', now we may have to re-sort that element
 	var (
-		current, neighbour = fi.iterators[pos], fi.iterators[pos+1]
-		val, neighbourVal  = current.it.Key(), neighbour.it.Key()
+		cur, next         = fi.iterators[idx], fi.iterators[idx+1]
+		curHash, nextHash = cur.it.Hash(), next.it.Hash()
 	)
-	if diff := bytes.Compare(val[:], neighbourVal[:]); diff < 0 {
+	if diff := bytes.Compare(curHash[:], nextHash[:]); diff < 0 {
 		// It is still in correct place
 		return true
-	} else if diff == 0 && current.priority < neighbour.priority {
-		// So still in correct place, but we need to iterate on the neighbour
-		fi.innerNext(pos + 1)
+	} else if diff == 0 && cur.priority < next.priority {
+		// So still in correct place, but we need to iterate on the next
+		fi.next(idx + 1)
 		return true
 	}
-	// At this point, the elem is in the wrong location, but the
-	// remaining list is sorted. Find out where to move the elem
-	iteratee := -1
+	// At this point, the iterator is in the wrong location, but the remaining
+	// list is sorted. Find out where to move the item.
+	clash := -1
 	index := sort.Search(len(fi.iterators), func(n int) bool {
-		if n < pos {
-			// No need to search 'behind' us
+		// The iterator always advances forward, so anything before the old slot
+		// is known to be behind us, so just skip them altogether. This actually
+		// is an important clause since the sort order got invalidated.
+		if n < idx {
 			return false
 		}
 		if n == len(fi.iterators)-1 {
 			// Can always place an elem last
 			return true
 		}
-		neighbour := fi.iterators[n+1].it.Key()
-		if diff := bytes.Compare(val[:], neighbour[:]); diff < 0 {
+		nextHash := fi.iterators[n+1].it.Hash()
+		if diff := bytes.Compare(curHash[:], nextHash[:]); diff < 0 {
 			return true
 		} else if diff > 0 {
 			return false
 		}
 		// The elem we're placing it next to has the same value,
 		// so whichever winds up on n+1 will need further iteraton
-		iteratee = n + 1
-		if current.priority < fi.iterators[n+1].priority {
+		clash = n + 1
+		if cur.priority < fi.iterators[n+1].priority {
 			// We can drop the iterator here
 			return true
 		}
 		// We need to move it one step further
 		return false
 		// TODO benchmark which is best, this works too:
-		//iteratee = n
+		//clash = n
 		//return true
 		// Doing so should finish the current search earlier
 	})
-	fi.move(pos, index)
-	if iteratee != -1 {
-		fi.innerNext(iteratee)
+	fi.move(idx, index)
+	if clash != -1 {
+		fi.next(clash)
 	}
 	return true
 }
 
-// move moves an iterator to another position in the list
+// move advances an iterator to another position in the list.
 func (fi *fastAccountIterator) move(index, newpos int) {
-	if newpos > len(fi.iterators)-1 {
-		newpos = len(fi.iterators) - 1
-	}
-	var (
-		elem   = fi.iterators[index]
-		middle = fi.iterators[index+1 : newpos+1]
-		suffix []*weightedIterator
-	)
-	if newpos < len(fi.iterators)-1 {
-		suffix = fi.iterators[newpos+1:]
-	}
-	fi.iterators = append(fi.iterators[:index], middle...)
-	fi.iterators = append(fi.iterators, elem)
-	fi.iterators = append(fi.iterators, suffix...)
-}
-
-// remove drops an iterator from the list
-func (fi *fastAccountIterator) remove(index int) {
-	fi.iterators = append(fi.iterators[:index], fi.iterators[index+1:]...)
+	elem := fi.iterators[index]
+	copy(fi.iterators[index:], fi.iterators[index+1:newpos+1])
+	fi.iterators[newpos] = elem
 }
 
 // Error returns any failure that occurred during iteration, which might have
@@ -237,20 +239,20 @@ func (fi *fastAccountIterator) Error() error {
 	return fi.fail
 }
 
-// Key returns the current key
-func (fi *fastAccountIterator) Key() common.Hash {
-	return fi.iterators[0].it.Key()
+// Hash returns the current key
+func (fi *fastAccountIterator) Hash() common.Hash {
+	return fi.iterators[0].it.Hash()
 }
 
-// Value returns the current key
-func (fi *fastAccountIterator) Value() []byte {
-	return fi.iterators[0].it.Value()
+// Account returns the current key
+func (fi *fastAccountIterator) Account() []byte {
+	return fi.iterators[0].it.Account()
 }
 
 // Debug is a convencience helper during testing
 func (fi *fastAccountIterator) Debug() {
 	for _, it := range fi.iterators {
-		fmt.Printf("[p=%v v=%v] ", it.priority, it.it.Key()[0])
+		fmt.Printf("[p=%v v=%v] ", it.priority, it.it.Hash()[0])
 	}
 	fmt.Println()
 }
