@@ -104,33 +104,16 @@ type diffLayer struct {
 	lock sync.RWMutex
 }
 
-// accountBloomHasher is a wrapper around a common.Hash to satisfy the interface
-// API requirements of the bloom library used. It's used to convert an account
+// accountBloomHash  is s used to convert an account
 // hash into a 64 bit mini hash.
-type accountBloomHasher common.Hash
-
-func (h accountBloomHasher) Write(p []byte) (n int, err error) { panic("not implemented") }
-func (h accountBloomHasher) Sum(b []byte) []byte               { panic("not implemented") }
-func (h accountBloomHasher) Reset()                            { panic("not implemented") }
-func (h accountBloomHasher) BlockSize() int                    { panic("not implemented") }
-func (h accountBloomHasher) Size() int                         { return 8 }
-func (h accountBloomHasher) Sum64() uint64 {
+func accountBloomHash(h common.Hash) uint64 {
 	return binary.BigEndian.Uint64(h[bloomHasherOffset : bloomHasherOffset+8])
 }
 
-// storageBloomHasher is a wrapper around a [2]common.Hash to satisfy the interface
-// API requirements of the bloom library used. It's used to convert an account
-// hash into a 64 bit mini hash.
-type storageBloomHasher [2]common.Hash
-
-func (h storageBloomHasher) Write(p []byte) (n int, err error) { panic("not implemented") }
-func (h storageBloomHasher) Sum(b []byte) []byte               { panic("not implemented") }
-func (h storageBloomHasher) Reset()                            { panic("not implemented") }
-func (h storageBloomHasher) BlockSize() int                    { panic("not implemented") }
-func (h storageBloomHasher) Size() int                         { return 8 }
-func (h storageBloomHasher) Sum64() uint64 {
-	return binary.BigEndian.Uint64(h[0][bloomHasherOffset:bloomHasherOffset+8]) ^
-		binary.BigEndian.Uint64(h[1][bloomHasherOffset:bloomHasherOffset+8])
+// storageBloomHash is used to convert an account + storage hash into a 64 bit mini hash.
+func storageBloomHash(accountHash, storageHash common.Hash) uint64 {
+	return binary.BigEndian.Uint64(accountHash[bloomHasherOffset:bloomHasherOffset+8]) ^
+		binary.BigEndian.Uint64(storageHash[bloomHasherOffset:bloomHasherOffset+8])
 }
 
 // newDiffLayer creates a new diff on top of an existing snapshot, whether that's a low
@@ -170,7 +153,7 @@ func (dl *diffLayer) initBloom() {
 	dl.memory = 0
 	dataSize, nHashes := uint64(0), uint64(0)
 	for hash, data := range dl.accountData {
-		dl.diffed.Add(accountBloomHasher(hash))
+		dl.diffed.AddHash(accountBloomHash(hash))
 		dataSize += uint64(len(data))
 		nHashes++
 	}
@@ -180,7 +163,7 @@ func (dl *diffLayer) initBloom() {
 	dataSize, nHashes = uint64(0), uint64(0)
 	for accountHash, slots := range dl.storageData {
 		for storageHash, data := range slots {
-			dl.diffed.Add(storageBloomHasher{accountHash, storageHash})
+			dl.diffed.AddHash(storageBloomHash(accountHash, storageHash))
 			dataSize += uint64(len(data))
 			nHashes++
 		}
@@ -266,7 +249,7 @@ func (dl *diffLayer) AccountRLP(hash common.Hash) ([]byte, error) {
 	// Check the bloom filter first whether there's even a point in reaching into
 	// all the maps in all the layers below
 	dl.lock.RLock()
-	hit := dl.cumulative.Contains(accountBloomHasher(hash))
+	hit := dl.cumulative.ContainsHash(accountBloomHash(hash))
 	dl.lock.RUnlock()
 
 	// If the bloom filter misses, don't even bother with traversing the memory
@@ -320,7 +303,7 @@ func (dl *diffLayer) Storage(accountHash, storageHash common.Hash) ([]byte, erro
 	// Check the bloom filter first whether there's even a point in reaching into
 	// all the maps in all the layers below
 	dl.lock.RLock()
-	hit := dl.cumulative.Contains(storageBloomHasher{accountHash, storageHash})
+	hit := dl.cumulative.ContainsHash(storageBloomHash(accountHash, storageHash))
 	dl.lock.RUnlock()
 
 	// If the bloom filter misses, don't even bother with traversing the memory
