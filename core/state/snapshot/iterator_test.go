@@ -164,8 +164,6 @@ func TestIteratorTraversal(t *testing.T) {
 	verifyIterator(t, 7, child.newBinaryAccountIterator())
 	// multi-layered fast iterator
 	verifyIterator(t, 7, newFastAccountIterator(child))
-	// multi-layered heap iterator
-	verifyIterator(t, 7, newHeapAccountIterator(child))
 }
 
 // TestIteratorTraversalValues tests some multi-layer iteration, where we
@@ -229,22 +227,6 @@ func TestIteratorTraversalValues(t *testing.T) {
 		if !bytes.Equal(exp, got) {
 			t.Fatalf("Error on key %x, got %v exp %v", key, string(got), string(exp))
 		}
-		//fmt.Printf("val: %v\n", string(it.Account()))
-	}
-	it = newHeapAccountIterator(child)
-	defer it.Release()
-
-	for it.Next() {
-		key := it.Hash()
-		exp, err := child.accountRLP(key, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got := it.Account()
-		if !bytes.Equal(exp, got) {
-			t.Fatalf("Error on key %x, got %v exp %v", key, string(got), string(exp))
-		}
-		//fmt.Printf("val: %v\n", string(it.Account()))
 	}
 }
 
@@ -275,8 +257,6 @@ func TestIteratorLargeTraversal(t *testing.T) {
 	verifyIterator(t, 200, child.newBinaryAccountIterator())
 	// multi-layered fast iterator
 	verifyIterator(t, 200, newFastAccountIterator(child))
-	// multi-layered heap iterator
-	verifyIterator(t, 200, newHeapAccountIterator(child))
 }
 
 // TestIteratorFlatting tests what happens when we
@@ -452,31 +432,6 @@ func BenchmarkIteratorTraversal(b *testing.B) {
 			}
 		}
 	})
-	b.Run("heap iterator keys", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			got := 0
-			it := newHeapAccountIterator(child)
-			for it.Next() {
-				got++
-			}
-			if exp := 200; got != exp {
-				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
-			}
-		}
-	})
-	b.Run("heap iterator values", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			got := 0
-			it := newHeapAccountIterator(child)
-			for it.Next() {
-				got++
-				it.Account()
-			}
-			if exp := 200; got != exp {
-				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
-			}
-		}
-	})
 }
 
 // BenchmarkIteratorLargeBaselayer is a pretty realistic benchmark, where
@@ -528,30 +483,6 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 			}
 		}
 	})
-	b.Run("fast iterator (keys)", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			got := 0
-			it := newFastAccountIterator(child)
-			for it.Next() {
-				got++
-			}
-			if exp := 2000; got != exp {
-				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
-			}
-		}
-	})
-	b.Run("heap iterator (keys)", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			got := 0
-			it := newHeapAccountIterator(child)
-			for it.Next() {
-				got++
-			}
-			if exp := 2000; got != exp {
-				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
-			}
-		}
-	})
 	b.Run("binary iterator (values)", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
@@ -566,12 +497,11 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 			}
 		}
 	})
-	b.Run("fast iterator (values)", func(b *testing.B) {
+	b.Run("fast iterator (keys)", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
 			it := newFastAccountIterator(child)
 			for it.Next() {
-				it.Account()
 				got++
 			}
 			if exp := 2000; got != exp {
@@ -579,10 +509,10 @@ func BenchmarkIteratorLargeBaselayer(b *testing.B) {
 			}
 		}
 	})
-	b.Run("heap iterator (values)", func(b *testing.B) {
+	b.Run("fast iterator (values)", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			got := 0
-			it := newHeapAccountIterator(child)
+			it := newFastAccountIterator(child)
 			for it.Next() {
 				it.Account()
 				got++
@@ -632,10 +562,6 @@ func BenchmarkBinaryAccountIteration(b *testing.B) {
 
 func BenchmarkFastAccountIteration(b *testing.B) {
 	benchmarkAccountIteration(b, newFastAccountIterator)
-}
-
-func BenchmarkHeapAccountIteration(b *testing.B) {
-	benchmarkAccountIteration(b, newHeapAccountIterator)
 }
 
 func benchmarkAccountIteration(b *testing.B, iterator func(snap snapshot) AccountIterator) {
