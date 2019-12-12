@@ -40,21 +40,15 @@ func (dl *diffLayer) newBinaryAccountIterator() AccountIterator {
 	parent, ok := dl.parent.(*diffLayer)
 	if !ok {
 		// parent is the disk layer
-		return dl.AccountIterator()
+		return dl.AccountIterator(common.Hash{})
 	}
 	l := &binaryAccountIterator{
-		a: dl.AccountIterator().(*diffAccountIterator),
+		a: dl.AccountIterator(common.Hash{}).(*diffAccountIterator),
 		b: parent.newBinaryAccountIterator(),
 	}
 	l.aDone = !l.a.Next()
 	l.bDone = !l.b.Next()
 	return l
-}
-
-// Seek steps the iterator forward as many elements as needed, so that after
-// calling Next(), the iterator will be at a key higher than the given hash.
-func (it *binaryAccountIterator) Seek(hash common.Hash) {
-	panic("todo: implement")
 }
 
 // Next steps the iterator forward one element, returning false if exhausted,

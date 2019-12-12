@@ -136,7 +136,7 @@ type snapshot interface {
 	Stale() bool
 
 	// AccountIterator creates an account iterator over an arbitrary layer.
-	AccountIterator() AccountIterator
+	AccountIterator(seek common.Hash) AccountIterator
 }
 
 // SnapshotTree is an Ethereum state snapshot tree. It consists of one persistent

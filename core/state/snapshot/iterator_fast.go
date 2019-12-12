@@ -72,33 +72,37 @@ type fastAccountIterator struct {
 // element per diff layer. The returned combo iterator can be used to walk over
 // the entire snapshot diff stack simultaneously.
 func newFastAccountIterator(snap snapshot) AccountIterator {
+	return newFastAccountIteratorWithSeek(snap, common.Hash{})
+}
+
+// newFastAccountIteratorWithSeek creates a new hierarhical account iterator with
+// one element per diff layer. The returned combo iterator can be used to walk over
+// the entire snapshot diff stack simultaneously.
+func newFastAccountIteratorWithSeek(snap snapshot, seek common.Hash) AccountIterator {
 	fi := new(fastAccountIterator)
 	for depth := 0; snap != nil; depth++ {
 		fi.iterators = append(fi.iterators, &weightedAccountIterator{
-			it:       snap.AccountIterator(),
+			it:       snap.AccountIterator(seek),
 			priority: depth,
 		})
 		snap = snap.Parent()
 	}
-	fi.Seek(common.Hash{})
+	fi.init()
 	return fi
 }
 
-// Seek steps the iterator forward as many elements as needed, so that after
-// calling Next(), the iterator will be at a key higher than the given hash.
-func (fi *fastAccountIterator) Seek(hash common.Hash) {
+// init walks over all the iterators and resolves any clashes between them, after
+// which it prepares the stack for step-by-step iteration.
+func (fi *fastAccountIterator) init() {
 	// Track which account hashes are iterators positioned on
 	var positioned = make(map[common.Hash]int)
 
 	// Position all iterators and track how many remain live
 	for i := 0; i < len(fi.iterators); i++ {
-		// Position the next iterator in line
-		it := fi.iterators[i]
-		it.it.Seek(hash)
-
 		// Retrieve the first element and if it clashes with a previous iterator,
 		// advance either the current one or the old one. Repeat until nothing is
 		// clashing any more.
+		it := fi.iterators[i]
 		for {
 			// If the iterator is exhausted, drop it off the end
 			if !it.it.Next() {
