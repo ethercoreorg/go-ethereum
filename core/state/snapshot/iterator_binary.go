@@ -40,10 +40,10 @@ func (dl *diffLayer) newBinaryAccountIterator() AccountIterator {
 	parent, ok := dl.parent.(*diffLayer)
 	if !ok {
 		// parent is the disk layer
-		return dl.newAccountIterator()
+		return dl.AccountIterator()
 	}
 	l := &binaryAccountIterator{
-		a: dl.newAccountIterator(),
+		a: dl.AccountIterator().(*diffAccountIterator),
 		b: parent.newBinaryAccountIterator(),
 	}
 	l.aDone = !l.a.Next()
@@ -112,4 +112,10 @@ func (it *binaryAccountIterator) Account() []byte {
 		return nil
 	}
 	return blob
+}
+
+// Release recursively releases all the iterators in the stack.
+func (it *binaryAccountIterator) Release() {
+	it.a.Release()
+	it.b.Release()
 }

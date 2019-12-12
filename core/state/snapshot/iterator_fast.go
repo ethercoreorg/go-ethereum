@@ -32,40 +32,18 @@ type weightedAccountIterator struct {
 	priority int
 }
 
-// fastAccountIterator is a more optimized multi-layer iterator which maintains a
-// direct mapping of all iterators leading down to the bottom layer.
-type fastAccountIterator struct {
-	iterators []*weightedAccountIterator
-	initiated bool
-	fail      error
-}
-
-// newFastAccountIterator creates a new hierarhical account iterator with one
-// element per diff layer. The returned combo iterator can be used to walk over
-// the entire snapshot diff stack simultaneously.
-func (dl *diffLayer) newFastAccountIterator() AccountIterator {
-	fi := new(fastAccountIterator)
-	for i, it := range dl.iterators() {
-		fi.iterators = append(fi.iterators, &weightedAccountIterator{
-			it:       it,
-			priority: -i,
-		})
-	}
-	fi.Seek(common.Hash{})
-	return fi
-}
+// weightedAccountIterators is a set of iterators implementing the sort.Interface.
+type weightedAccountIterators []*weightedAccountIterator
 
 // Len implements sort.Interface, returning the number of active iterators.
-func (fi *fastAccountIterator) Len() int {
-	return len(fi.iterators)
-}
+func (its weightedAccountIterators) Len() int { return len(its) }
 
 // Less implements sort.Interface, returning which of two iterators in the stack
 // is before the other.
-func (fi *fastAccountIterator) Less(i, j int) bool {
+func (its weightedAccountIterators) Less(i, j int) bool {
 	// Order the iterators primarilly by the account hashes
-	hashI := fi.iterators[i].it.Hash()
-	hashJ := fi.iterators[j].it.Hash()
+	hashI := its[i].it.Hash()
+	hashJ := its[j].it.Hash()
 
 	switch bytes.Compare(hashI[:], hashJ[:]) {
 	case -1:
@@ -74,12 +52,36 @@ func (fi *fastAccountIterator) Less(i, j int) bool {
 		return false
 	}
 	// Same account in multiple layers, split by priority
-	return fi.iterators[i].priority < fi.iterators[j].priority
+	return its[i].priority < its[j].priority
 }
 
 // Swap implements sort.Interface, swapping two entries in the iterator stack.
-func (fi *fastAccountIterator) Swap(i, j int) {
-	fi.iterators[i], fi.iterators[j] = fi.iterators[j], fi.iterators[i]
+func (its weightedAccountIterators) Swap(i, j int) {
+	its[i], its[j] = its[j], its[i]
+}
+
+// fastAccountIterator is a more optimized multi-layer iterator which maintains a
+// direct mapping of all iterators leading down to the bottom layer.
+type fastAccountIterator struct {
+	iterators weightedAccountIterators
+	initiated bool
+	fail      error
+}
+
+// newFastAccountIterator creates a new hierarhical account iterator with one
+// element per diff layer. The returned combo iterator can be used to walk over
+// the entire snapshot diff stack simultaneously.
+func newFastAccountIterator(snap snapshot) AccountIterator {
+	fi := new(fastAccountIterator)
+	for depth := 0; snap != nil; depth++ {
+		fi.iterators = append(fi.iterators, &weightedAccountIterator{
+			it:       snap.AccountIterator(),
+			priority: depth,
+		})
+		snap = snap.Parent()
+	}
+	fi.Seek(common.Hash{})
+	return fi
 }
 
 // Seek steps the iterator forward as many elements as needed, so that after
@@ -100,13 +102,14 @@ func (fi *fastAccountIterator) Seek(hash common.Hash) {
 		for {
 			// If the iterator is exhausted, drop it off the end
 			if !it.it.Next() {
+				it.it.Release()
 				last := len(fi.iterators) - 1
 
 				fi.iterators[i] = fi.iterators[last]
 				fi.iterators[last] = nil
 				fi.iterators = fi.iterators[:last]
 
-				i-- // TODO(karalabe): this was missing, add a test that catches it
+				i--
 				break
 			}
 			// The iterator is still alive, check for collisions with previous ones
@@ -136,7 +139,7 @@ func (fi *fastAccountIterator) Seek(hash common.Hash) {
 		}
 	}
 	// Re-sort the entire list
-	sort.Sort(fi)
+	sort.Sort(fi.iterators)
 	fi.initiated = false
 }
 
@@ -164,7 +167,9 @@ func (fi *fastAccountIterator) next(idx int) bool {
 	// If this particular iterator got exhausted, remove it and return true (the
 	// next one is surely not exhausted yet, otherwise it would have been removed
 	// already).
-	if !fi.iterators[idx].it.Next() {
+	if it := fi.iterators[idx].it; !it.Next() {
+		it.Release()
+
 		fi.iterators = append(fi.iterators[:idx], fi.iterators[idx+1:]...)
 		return len(fi.iterators) > 0
 	}
@@ -247,6 +252,15 @@ func (fi *fastAccountIterator) Hash() common.Hash {
 // Account returns the current key
 func (fi *fastAccountIterator) Account() []byte {
 	return fi.iterators[0].it.Account()
+}
+
+// Release iterates over all the remaining live layer iterators and releases each
+// of thme individually.
+func (fi *fastAccountIterator) Release() {
+	for _, it := range fi.iterators {
+		it.it.Release()
+	}
+	fi.iterators = nil
 }
 
 // Debug is a convencience helper during testing
