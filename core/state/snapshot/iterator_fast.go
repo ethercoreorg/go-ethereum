@@ -63,6 +63,9 @@ func (its weightedAccountIterators) Swap(i, j int) {
 // fastAccountIterator is a more optimized multi-layer iterator which maintains a
 // direct mapping of all iterators leading down to the bottom layer.
 type fastAccountIterator struct {
+	tree *Tree       // Snapshot tree to reinitialize stale sub-iterators with
+	root common.Hash // Root hash to reinitialize stale sub-iterators through
+
 	iterators weightedAccountIterators
 	initiated bool
 	fail      error
@@ -71,24 +74,25 @@ type fastAccountIterator struct {
 // newFastAccountIterator creates a new hierarhical account iterator with one
 // element per diff layer. The returned combo iterator can be used to walk over
 // the entire snapshot diff stack simultaneously.
-func newFastAccountIterator(snap snapshot) AccountIterator {
-	return newFastAccountIteratorWithSeek(snap, common.Hash{})
-}
-
-// newFastAccountIteratorWithSeek creates a new hierarhical account iterator with
-// one element per diff layer. The returned combo iterator can be used to walk over
-// the entire snapshot diff stack simultaneously.
-func newFastAccountIteratorWithSeek(snap snapshot, seek common.Hash) AccountIterator {
-	fi := new(fastAccountIterator)
-	for depth := 0; snap != nil; depth++ {
+func newFastAccountIterator(tree *Tree, root common.Hash, seek common.Hash) (AccountIterator, error) {
+	snap := tree.Snapshot(root)
+	if snap == nil {
+		return nil, fmt.Errorf("unknown snapshot: %x", root)
+	}
+	fi := &fastAccountIterator{
+		tree: tree,
+		root: root,
+	}
+	current := snap.(snapshot)
+	for depth := 0; current != nil; depth++ {
 		fi.iterators = append(fi.iterators, &weightedAccountIterator{
-			it:       snap.AccountIterator(seek),
+			it:       current.AccountIterator(seek),
 			priority: depth,
 		})
-		snap = snap.Parent()
+		current = current.Parent()
 	}
 	fi.init()
-	return fi
+	return fi, nil
 }
 
 // init walks over all the iterators and resolves any clashes between them, after

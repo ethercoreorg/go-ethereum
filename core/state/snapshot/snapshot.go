@@ -566,3 +566,9 @@ func (t *Tree) Rebuild(root common.Hash) {
 		root: generateSnapshot(t.diskdb, t.triedb, t.cache, root, wiper),
 	}
 }
+
+// AccountIterator creates a new account iterator for the specified root hash and
+// seeks to a starting account hash.
+func (t *Tree) AccountIterator(root common.Hash, seek common.Hash) (AccountIterator, error) {
+	return newFastAccountIterator(t, root, seek)
+}
